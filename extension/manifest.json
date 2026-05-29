@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Tekless – Solana Memecoin Trader",
+  "version": "1.0.0",
+  "description": "Automatically mirror-trades Solana memecoins on pump.fun and DEXscreener",
+  "permissions": [
+    "storage",
+    "notifications",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://pump.fun/*",
+    "https://www.pump.fun/*",
+    "https://neo.bullx.io/*",
+    "https://bullx.io/*",
+    "https://dexscreener.com/*",
+    "https://quote-api.jup.ag/*",
+    "https://api.jup.ag/*",
+    "https://api.mainnet-beta.solana.com/*",
+    "https://*.helius-rpc.com/*",
+    "https://*.quiknode.pro/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Tekless Trader",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://pump.fun/*",
+        "https://www.pump.fun/*",
+        "https://neo.bullx.io/*",
+        "https://bullx.io/*",
+        "https://dexscreener.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": [
+        "https://pump.fun/*",
+        "https://www.pump.fun/*",
+        "https://neo.bullx.io/*",
+        "https://bullx.io/*",
+        "https://dexscreener.com/*"
+      ]
+    }
+  ]
+}

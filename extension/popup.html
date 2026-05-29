@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tekless Trader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="logo">⚡ Tekless</div>
+    <div class="status-bar">
+      <span id="status-dot" class="dot dot-off"></span>
+      <span id="status-text">Idle</span>
+      <span id="wallet-badge" class="badge hidden"></span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="coins">Coins</button>
+    <button class="tab" data-tab="log">Log</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <!-- ── COINS TAB ── -->
+  <section id="tab-coins" class="tab-content active">
+    <div class="add-coin-form">
+      <input id="coin-mint" type="text" placeholder="Token mint address…" spellcheck="false">
+      <input id="coin-symbol" type="text" placeholder="Symbol (e.g. BONK)" maxlength="12">
+      <input id="coin-decimals" type="number" placeholder="Decimals" value="6" min="0" max="18">
+      <button id="btn-add-coin" class="btn btn-primary">+ Add</button>
+    </div>
+    <div id="coins-list" class="list"></div>
+    <p class="hint">When a <span class="tag buy">BUY</span> is detected → you <span class="tag sell">SELL</span>. When a <span class="tag sell">SELL</span> is detected → you <span class="tag buy">BUY</span>.</p>
+  </section>
+
+  <!-- ── LOG TAB ── -->
+  <section id="tab-log" class="tab-content">
+    <div class="log-toolbar">
+      <span id="log-count">0 entries</span>
+      <button id="btn-clear-log" class="btn btn-ghost btn-sm">Clear</button>
+    </div>
+    <div id="trade-log" class="list log-list"></div>
+  </section>
+
+  <!-- ── SETTINGS TAB ── -->
+  <section id="tab-settings" class="tab-content">
+    <div class="settings-form">
+
+      <div class="form-group">
+        <label>Wallet Mode</label>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="mode" value="phantom" checked> Phantom (approves each trade)
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="mode" value="hotwallet"> Hot Wallet (fully automated)
+          </label>
+        </div>
+      </div>
+
+      <div id="hotwallet-section" class="form-group hidden">
+        <label>Private Key <span class="warn">(64-byte base58 keypair)</span></label>
+        <input id="private-key" type="password" placeholder="Paste your private key…" spellcheck="false" autocomplete="off">
+        <p class="hint warn">⚠ Only use a wallet with limited funds. Key is stored locally in the extension only.</p>
+        <div id="pubkey-display" class="pubkey hidden"></div>
+      </div>
+
+      <div class="form-group">
+        <label>RPC Endpoint</label>
+        <input id="rpc-url" type="text" placeholder="https://api.mainnet-beta.solana.com" spellcheck="false">
+      </div>
+
+      <div class="form-group">
+        <label>Trade Mode</label>
+        <select id="trade-mode">
+          <option value="match">Match amount (mirror exact SOL size)</option>
+          <option value="full">Full position (100% balance)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Max SOL per trade</label>
+        <input id="max-sol" type="number" step="0.01" min="0.01" placeholder="1.0">
+      </div>
+
+      <div class="form-group">
+        <label>Min trade size (SOL)</label>
+        <input id="min-sol" type="number" step="0.01" min="0" placeholder="0.05">
+      </div>
+
+      <div class="form-group">
+        <label>Slippage (BPS)</label>
+        <input id="slippage" type="number" step="50" min="50" max="5000" placeholder="500">
+        <span class="hint">500 bps = 5%. Memecoins often need 500–1000.</span>
+      </div>
+
+      <div class="form-group">
+        <label>Cooldown (ms between trades per coin)</label>
+        <input id="cooldown" type="number" step="500" min="0" placeholder="3000">
+      </div>
+
+      <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+      <div id="settings-msg" class="msg hidden"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="form-group">
+      <label>Dispatch API</label>
+      <div class="code-block">window.__tekless.buy('MINT', 0.1)<br>window.__tekless.sell('MINT')</div>
+      <p class="hint">Run these in the browser console on a supported site to manually trigger trades.</p>
+    </div>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>
