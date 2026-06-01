@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Meteora Liquidity Manager",
+  "version": "1.0.0",
+  "description": "Remove liquidity from Meteora DLMM pools instantly",
+  "permissions": [
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://dlmm-api.meteora.ag/*",
+    "https://*.helius-rpc.com/*",
+    "https://mainnet.helius-rpc.com/*",
+    "https://api.mainnet-beta.solana.com/*",
+    "https://solana-api.projectserum.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Meteora Liquidity"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Meteora Liquidity</title>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="logo">⚡ Meteora</div>
+      <div class="wallet-badge" id="wallet-badge">No Wallet</div>
+    </header>
+
+    <div class="content">
+
+      <!-- STEP 1: Wallet -->
+      <section class="card" id="wallet-card">
+        <h3>1 · Wallet</h3>
+        <div class="input-group">
+          <input
+            type="password"
+            id="pk-input"
+            placeholder="Private key (base58 or [byte array])"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-primary" id="import-btn">Import</button>
+        </div>
+        <div id="wallet-info" class="wallet-info hidden">
+          <div class="address-row">
+            <span class="address-text" id="wallet-address"></span>
+          </div>
+          <div class="balance-text" id="sol-balance"></div>
+        </div>
+      </section>
+
+      <!-- STEP 2: RPC -->
+      <section class="card" id="rpc-card">
+        <h3>2 · RPC</h3>
+        <div class="tabs">
+          <button class="tab active" data-rpc="helius" id="tab-helius">Helius</button>
+          <button class="tab" data-rpc="jupiter" id="tab-jupiter">Jupiter</button>
+          <button class="tab" data-rpc="custom" id="tab-custom">Custom</button>
+        </div>
+        <div id="helius-cfg">
+          <input type="text" id="helius-key" placeholder="Helius API key" autocomplete="off" />
+        </div>
+        <div id="jupiter-cfg" class="hidden">
+          <div style="font-size:12px;color:var(--muted);padding:6px 0">
+            Uses <code>api.mainnet-beta.solana.com</code> — no key needed.
+          </div>
+        </div>
+        <div id="custom-cfg" class="hidden">
+          <input type="url" id="custom-url" placeholder="https://your-rpc.example.com" />
+        </div>
+        <button class="btn-secondary btn-full" id="connect-rpc-btn">Connect RPC</button>
+        <div class="rpc-status-row hidden" id="rpc-status-row">
+          <span class="status-dot" id="rpc-dot"></span>
+          <span id="rpc-status-text"></span>
+        </div>
+      </section>
+
+      <!-- STEP 3: Pool -->
+      <section class="card" id="pool-card">
+        <h3>3 · Pool</h3>
+        <div class="input-group">
+          <input
+            type="text"
+            id="mint-input"
+            placeholder="Token CA (mint address)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-secondary" id="load-pool-btn" disabled>Load</button>
+        </div>
+        <div id="pool-list" class="hidden" style="margin-top:8px"></div>
+        <div id="position-box" class="hidden position-box">
+          <div class="position-row">
+            <span class="position-label">Positions</span>
+            <span class="position-value" id="pos-count">—</span>
+          </div>
+          <div class="position-row">
+            <span class="position-label">SOL in pool</span>
+            <span class="position-value sol" id="pos-sol">—</span>
+          </div>
+          <div class="position-row">
+            <span class="position-label">Token in pool</span>
+            <span class="position-value" id="pos-token">—</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4: Remove -->
+      <section class="card" id="remove-card">
+        <h3>4 · Remove Liquidity</h3>
+        <input
+          type="text"
+          id="amount-input"
+          placeholder="SOL amount, % or 'all'  (e.g. 1, 0.5, 50%, all)"
+          autocomplete="off"
+        />
+        <div class="quick-btns">
+          <button class="btn-quick" data-pct="25">25%</button>
+          <button class="btn-quick" data-pct="50">50%</button>
+          <button class="btn-quick" data-pct="75">75%</button>
+          <button class="btn-quick" data-pct="100">All</button>
+        </div>
+        <button class="btn-danger" id="remove-btn" disabled>Remove Liquidity</button>
+      </section>
+
+      <!-- LOG -->
+      <section class="card">
+        <h3>Log</h3>
+        <div class="log" id="log"></div>
+      </section>
+
+    </div>
+  </div>
+</body>
+</html>
