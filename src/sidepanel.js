@@ -142,10 +142,8 @@ loadDirectBtn.addEventListener('click', async () => {
       showBox(result.positions.length, result.totalSol, result.totalTokenRaw);
       addLog(`DLMM · ${result.positions.length} position(s) · ${result.totalSol.toFixed(4)} SOL`, 'success');
       loaded = true;
-    } catch (e) {
-      if (!e.message.toLowerCase().includes('discriminator') &&
-          !e.message.toLowerCase().includes('decode') &&
-          !e.message.toLowerCase().includes('invalid')) throw e;
+    } catch (_dlmmErr) {
+      // Any error from DLMM parsing means the address isn't a DLMM pool — fall through to Dynamic AMM
     }
 
     if (!loaded) {
