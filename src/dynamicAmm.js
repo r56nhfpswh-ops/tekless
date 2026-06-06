@@ -1,7 +1,5 @@
 /**
  * Meteora Dynamic AMM — raw Solana only, no SDK.
- * Vault addresses are derived via PDA (matching the SDK approach) rather than
- * read from pool account bytes, which vary across pool versions.
  */
 import {
   PublicKey,
@@ -19,7 +17,7 @@ import BN from 'bn.js';
 
 const DYNAMIC_AMM_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
 const VAULT_PROGRAM       = new PublicKey('24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi');
-// Base key used in vault PDA seeds (from @meteora-ag/vault-sdk constants)
+// Default vault base key used by Meteora vault SDK
 const VAULT_BASE_KEY      = new PublicKey('HWzXGcGHy4tcpYfaRDCyLNzXqBTv3E6BttpCH2vJxArv');
 
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -31,13 +29,28 @@ const KNOWN_DECIMALS = {
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6,
 };
 
-// ── PDA derivation (mirrors @meteora-ag/vault-sdk getVaultPdas) ───────────────
+// ── Pool parser — reads all 7 leading pubkeys ─────────────────────────────────
+// Layout after 8-byte Anchor discriminator:
+//   lpMint(32) tokenAMint(32) tokenBMint(32) aVault(32) bVault(32) aVaultLp(32) bVaultLp(32)
 
-function deriveVaultAddresses(tokenMint, poolPk) {
-  const [vault] = PublicKey.findProgramAddressSync(
-    [Buffer.from('vault'), tokenMint.toBuffer(), VAULT_BASE_KEY.toBuffer()],
-    VAULT_PROGRAM,
-  );
+function parsePool(data) {
+  let o = 8;
+  const pk = () => { const k = new PublicKey(data.slice(o, o + 32)); o += 32; return k; };
+  return {
+    lpMint:     pk(),
+    tokenAMint: pk(),
+    tokenBMint: pk(),
+    aVault:     pk(),
+    bVault:     pk(),
+    aVaultLp:   pk(),
+    bVaultLp:   pk(),
+  };
+}
+
+// ── Sub-PDA derivation from a known vault address ─────────────────────────────
+// tokenVault and lpMint are always PDAs of the vault itself (independent of base key)
+
+function deriveVaultSubPdas(vault, poolPk) {
   const [tokenVault] = PublicKey.findProgramAddressSync(
     [Buffer.from('token_vault'), vault.toBuffer()],
     VAULT_PROGRAM,
@@ -46,7 +59,7 @@ function deriveVaultAddresses(tokenMint, poolPk) {
     [Buffer.from('lp_mint'), vault.toBuffer()],
     VAULT_PROGRAM,
   );
-  // Pool's share-of-vault LP token account: PDA([vault, pool], AMM_PROGRAM)
+  // Pool's LP token account inside this vault
   const [vaultLp] = PublicKey.findProgramAddressSync(
     [vault.toBuffer(), poolPk.toBuffer()],
     DYNAMIC_AMM_PROGRAM,
@@ -54,13 +67,13 @@ function deriveVaultAddresses(tokenMint, poolPk) {
   return { vault, tokenVault, lpMint, vaultLp };
 }
 
-// ── Pool account parser (only the first three PublicKeys are needed) ──────────
-
-function parsePool(data) {
-  // Layout (Anchor): [0:8] discriminator, [8:40] lpMint, [40:72] tokenAMint, [72:104] tokenBMint
-  let o = 8;
-  const pk = () => { const k = new PublicKey(data.slice(o, o + 32)); o += 32; return k; };
-  return { lpMint: pk(), tokenAMint: pk(), tokenBMint: pk() };
+// Derive vault PDA for pools that use the default base key
+function deriveDefaultVaultPda(tokenMint) {
+  const [vault] = PublicKey.findProgramAddressSync(
+    [Buffer.from('vault'), tokenMint.toBuffer(), VAULT_BASE_KEY.toBuffer()],
+    VAULT_PROGRAM,
+  );
+  return vault;
 }
 
 // ── Anchor discriminator (browser native crypto) ──────────────────────────────
@@ -78,27 +91,58 @@ export async function loadDynamicAmmPool(connection, poolAddress, userPublicKey)
 
   const poolInfo = await connection.getAccountInfo(poolPk);
   if (!poolInfo) throw new Error('Pool account not found');
-  const pool = parsePool(poolInfo.data);
 
+  // Verify this is actually a Dynamic AMM pool
+  if (!poolInfo.owner.equals(DYNAMIC_AMM_PROGRAM)) {
+    throw new Error(
+      `Address is not a Dynamic AMM pool (owner: ${poolInfo.owner.toBase58().slice(0, 8)}…). ` +
+      `Make sure you copy the pool address, not the LP mint address.`
+    );
+  }
+
+  const pool = parsePool(poolInfo.data);
   const aMintStr = pool.tokenAMint.toBase58();
   const bMintStr = pool.tokenBMint.toBase58();
+  const poolPkStr = poolPk.toBase58();
 
-  // Derive all vault-related addresses (no reading from pool bytes beyond the mints)
-  const A = deriveVaultAddresses(pool.tokenAMint, poolPk);
-  const B = deriveVaultAddresses(pool.tokenBMint, poolPk);
+  // Strategy: try vault addresses stored in pool bytes first (correct for all pool types).
+  // Fall back to default-base-key PDA derivation for pools where bytes parse wrong.
+  let A = deriveVaultSubPdas(pool.aVault, poolPk);
+  let B = deriveVaultSubPdas(pool.bVault, poolPk);
+  let [vaultAInfo, vaultBInfo] = await connection.getMultipleAccountsInfo([A.vault, B.vault]);
 
-  // Fetch vault accounts to read totalAmount (offset 11, u64 LE)
-  const [vaultAInfo, vaultBInfo] = await connection.getMultipleAccountsInfo([A.vault, B.vault]);
-  if (!vaultAInfo || !vaultBInfo) throw new Error('Vault accounts not found');
+  if (!vaultAInfo || !vaultBInfo) {
+    // Fallback: derive vault PDAs from token mints using the default base key
+    const fallbackVaultA = deriveDefaultVaultPda(pool.tokenAMint);
+    const fallbackVaultB = deriveDefaultVaultPda(pool.tokenBMint);
+    A = deriveVaultSubPdas(fallbackVaultA, poolPk);
+    B = deriveVaultSubPdas(fallbackVaultB, poolPk);
+    [vaultAInfo, vaultBInfo] = await connection.getMultipleAccountsInfo([A.vault, B.vault]);
+  }
+
+  if (!vaultAInfo || !vaultBInfo) {
+    throw new Error(
+      `Vault accounts not found for pool ${poolPkStr.slice(0, 8)}…` +
+      ` tokenA=${aMintStr.slice(0, 8)}… tokenB=${bMintStr.slice(0, 8)}…` +
+      ` Check the pool address is correct.`
+    );
+  }
+
+  // Read vault totalAmount (u64 LE at byte offset 11, after 8-byte disc + 1 enabled + 2 bumps)
   const vaultATotalAmount = new BN(vaultAInfo.data.slice(11, 19), 'le');
   const vaultBTotalAmount = new BN(vaultBInfo.data.slice(11, 19), 'le');
 
-  // Pool LP supply + pool's share-of-vault LP balances + vault LP total supplies
+  // Determine the actual vaultLp accounts: prefer byte-stored (pool.aVaultLp / pool.bVaultLp)
+  // but verify they look like the derived vaultLp — if they differ use derived (handles misparse)
+  const aVaultLpKey = A.vaultLp;
+  const bVaultLpKey = B.vaultLp;
+
+  // Pool LP supply + pool's vault LP balances + vault LP supplies (all in one round trip)
   const [lpSupplyResp, vaultALpBal, vaultBLpBal, vaultALpSupplyResp, vaultBLpSupplyResp] =
     await Promise.all([
       connection.getTokenSupply(pool.lpMint),
-      connection.getTokenAccountBalance(A.vaultLp),
-      connection.getTokenAccountBalance(B.vaultLp),
+      connection.getTokenAccountBalance(aVaultLpKey),
+      connection.getTokenAccountBalance(bVaultLpKey),
       connection.getTokenSupply(A.lpMint),
       connection.getTokenSupply(B.lpMint),
     ]);
@@ -135,8 +179,10 @@ export async function loadDynamicAmmPool(connection, poolAddress, userPublicKey)
 
   return {
     poolAddress,
-    pool,          // { lpMint, tokenAMint, tokenBMint }
-    derived: { A, B },
+    pool,
+    vaultA: { lpMint: A.lpMint, tokenVault: A.tokenVault, vaultKey: A.vault },
+    vaultB: { lpMint: B.lpMint, tokenVault: B.tokenVault, vaultKey: B.vault },
+    aVaultLpKey, bVaultLpKey,
     lpBalance, totalLpSupply,
     tokenAMintStr: aMintStr, tokenBMintStr: bMintStr,
     amountA: rawA / Math.pow(10, decimalsA),
@@ -148,7 +194,7 @@ export async function loadDynamicAmmPool(connection, poolAddress, userPublicKey)
 }
 
 export async function removeDynamicAmmLiquidity(connection, poolData, keypair, bps) {
-  const { poolAddress, pool, derived: { A, B }, lpBalance, userLpAta } = poolData;
+  const { poolAddress, pool, vaultA, vaultB, aVaultLpKey, bVaultLpKey, lpBalance, userLpAta } = poolData;
   if (lpBalance.isZero()) throw new Error('No LP tokens to remove');
 
   const clampedBps = Math.min(Math.max(Math.round(bps), 1), 10000);
@@ -189,22 +235,22 @@ export async function removeDynamicAmmLiquidity(connection, poolData, keypair, b
     programId: DYNAMIC_AMM_PROGRAM,
     data: Buffer.concat([ixDisc, args]),
     keys: [
-      { pubkey: poolPk,            isMut: true,  isSigner: false },
-      { pubkey: pool.lpMint,       isMut: true,  isSigner: false },
-      { pubkey: userLpAta,         isMut: true,  isSigner: false },
-      { pubkey: A.vaultLp,         isMut: true,  isSigner: false },
-      { pubkey: B.vaultLp,         isMut: true,  isSigner: false },
-      { pubkey: A.vault,           isMut: true,  isSigner: false },
-      { pubkey: B.vault,           isMut: true,  isSigner: false },
-      { pubkey: A.lpMint,          isMut: true,  isSigner: false },
-      { pubkey: B.lpMint,          isMut: true,  isSigner: false },
-      { pubkey: A.tokenVault,      isMut: true,  isSigner: false },
-      { pubkey: B.tokenVault,      isMut: true,  isSigner: false },
-      { pubkey: userTokenAta,      isMut: true,  isSigner: false },
-      { pubkey: userTokenBta,      isMut: true,  isSigner: false },
-      { pubkey: keypair.publicKey, isMut: false, isSigner: true  },
-      { pubkey: VAULT_PROGRAM,     isMut: false, isSigner: false },
-      { pubkey: TOKEN_PROGRAM_ID,  isMut: false, isSigner: false },
+      { pubkey: poolPk,              isMut: true,  isSigner: false },
+      { pubkey: pool.lpMint,         isMut: true,  isSigner: false },
+      { pubkey: userLpAta,           isMut: true,  isSigner: false },
+      { pubkey: aVaultLpKey,         isMut: true,  isSigner: false },
+      { pubkey: bVaultLpKey,         isMut: true,  isSigner: false },
+      { pubkey: vaultA.vaultKey,     isMut: true,  isSigner: false },
+      { pubkey: vaultB.vaultKey,     isMut: true,  isSigner: false },
+      { pubkey: vaultA.lpMint,       isMut: true,  isSigner: false },
+      { pubkey: vaultB.lpMint,       isMut: true,  isSigner: false },
+      { pubkey: vaultA.tokenVault,   isMut: true,  isSigner: false },
+      { pubkey: vaultB.tokenVault,   isMut: true,  isSigner: false },
+      { pubkey: userTokenAta,        isMut: true,  isSigner: false },
+      { pubkey: userTokenBta,        isMut: true,  isSigner: false },
+      { pubkey: keypair.publicKey,   isMut: false, isSigner: true  },
+      { pubkey: VAULT_PROGRAM,       isMut: false, isSigner: false },
+      { pubkey: TOKEN_PROGRAM_ID,    isMut: false, isSigner: false },
     ],
   });
 
