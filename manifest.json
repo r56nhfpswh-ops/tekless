@@ -8,7 +8,6 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://api.dexscreener.com/*",
     "https://*.helius-rpc.com/*",
     "https://mainnet.helius-rpc.com/*",
     "https://api.mainnet-beta.solana.com/*"
