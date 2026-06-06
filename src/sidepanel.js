@@ -14,10 +14,17 @@ import {
   removeLiquidity,
   parseBps,
 } from './meteora.js';
+import {
+  loadDynamicAmmPool,
+  removeDynamicAmmLiquidity,
+  parseDynamicBps,
+} from './dynamicAmm.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let selectedPool = null;  // item from findUserPoolsForToken()
-let poolInstance  = null; // DLMM instance for the selected pool
+let selectedPool  = null;  // pool data
+let poolInstance  = null;  // DLMM instance (null for Dynamic AMM)
+let poolType      = null;  // 'dlmm' | 'dynamic'
+let dynamicData   = null;  // data from loadDynamicAmmPool
 let rpcConnected  = false;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -203,7 +210,7 @@ async function selectPool(pool, el) {
   }
 }
 
-// ── Direct pool address load ──────────────────────────────────────────────────
+// ── Direct pool address load (auto-detects DLMM vs Dynamic AMM) ──────────────
 loadDirectBtn.addEventListener('click', async () => {
   const addr = poolAddrInput.value.trim();
   if (!addr) return;
@@ -216,34 +223,53 @@ loadDirectBtn.addEventListener('click', async () => {
   positionBox.classList.add('hidden');
   selectedPool = null;
   poolInstance  = null;
+  dynamicData   = null;
+  poolType      = null;
   removeBtn.disabled = true;
 
   try {
-    addLog(`Loading positions for pool ${addr.slice(0, 12)}…`, 'info');
-    const result = await loadPositionsDirect(getConnection(), addr, keypair.publicKey);
-
-    if (result.positions.length === 0) {
-      addLog('No positions found in this pool for your wallet', 'warn');
-      return;
+    // Try DLMM first
+    let loaded = false;
+    try {
+      addLog(`Trying as DLMM pool…`, 'info');
+      const result = await loadPositionsDirect(getConnection(), addr, keypair.publicKey);
+      selectedPool = result;
+      poolInstance = result.pool;
+      poolType     = 'dlmm';
+      showPositionBox(result.positions.length, result.totalSol, result.totalTokenRaw);
+      addLog(`DLMM · ${result.positions.length} position(s) · ${result.totalSol.toFixed(4)} SOL`, 'success');
+      loaded = true;
+    } catch (e) {
+      if (!e.message.includes('discriminator') && !e.message.includes('decode')) throw e;
+      addLog(`Not DLMM — trying Dynamic AMM…`, 'info');
     }
 
-    // Render as single item and auto-select it
-    selectedPool = result;
-    poolInstance = result.pool;
+    if (!loaded) {
+      const result = await loadDynamicAmmPool(getConnection(), addr, keypair.publicKey);
+      if (result.lpBalance.isZero()) {
+        addLog('No LP tokens found in this pool for your wallet', 'warn');
+        return;
+      }
+      dynamicData = result;
+      poolType    = 'dynamic';
+      showPositionBox(1, result.totalSol, result.totalTokenRaw);
+      addLog(`Dynamic AMM · LP balance: ${result.lpBalance.toString()} · ${result.totalSol.toFixed(4)} SOL`, 'success');
+    }
 
-    posCount.textContent = result.positions.length;
-    posSol.textContent   = `${result.totalSol.toFixed(6)} SOL`;
-    posToken.textContent = formatAmt(result.totalTokenRaw);
-    positionBox.classList.remove('hidden');
     removeBtn.disabled = false;
-
-    addLog(`${result.positions.length} position(s) · ${result.totalSol.toFixed(4)} SOL in pool`, 'success');
   } catch (e) {
     addLog(`Error: ${e.message}`, 'error');
   } finally {
     setLoading(loadDirectBtn, false, 'Load');
   }
 });
+
+function showPositionBox(count, sol, token) {
+  posCount.textContent = count;
+  posSol.textContent   = `${sol.toFixed(6)} SOL`;
+  posToken.textContent = formatAmt(token);
+  positionBox.classList.remove('hidden');
+}
 
 // ── All button ────────────────────────────────────────────────────────────────
 $('all-btn').addEventListener('click', () => { amountInput.value = 'all'; });
@@ -257,45 +283,62 @@ removeBtn.addEventListener('click', async () => {
   const amtRaw = amountInput.value.trim();
   if (!amtRaw) { addLog('Enter an amount', 'warn'); return; }
 
+  const totalSol = poolType === 'dynamic' ? dynamicData.totalSol : selectedPool?.totalSol ?? 0;
+
   let bps;
   try {
-    bps = parseBps(amtRaw, selectedPool.totalSol);
+    bps = poolType === 'dynamic'
+      ? parseDynamicBps(amtRaw, totalSol)
+      : parseBps(amtRaw, totalSol);
   } catch (e) {
     addLog(`Amount error: ${e.message}`, 'error');
     return;
   }
 
   const pctLabel = `${(bps / 100).toFixed(1)}%`;
-  addLog(`Removing ${pctLabel} from ${selectedPool.name}…`, 'info');
+  const poolLabel = poolType === 'dynamic' ? 'Dynamic AMM' : (selectedPool?.name ?? 'pool');
+  addLog(`Removing ${pctLabel} from ${poolLabel}…`, 'info');
   setLoading(removeBtn, true, `Removing ${pctLabel}…`);
 
   try {
-    const txHashes = await removeLiquidity(
-      getConnection(), poolInstance, selectedPool.positions, keypair, bps
-    );
+    let sigs = [];
 
-    for (const sig of txHashes) {
+    if (poolType === 'dynamic') {
+      const sig = await removeDynamicAmmLiquidity(getConnection(), dynamicData, keypair, bps);
+      sigs = [sig];
+    } else {
+      sigs = await removeLiquidity(
+        getConnection(), poolInstance, selectedPool.positions, keypair, bps
+      );
+    }
+
+    for (const sig of sigs) {
       const entry = document.createElement('div');
       entry.className = 'log-entry success';
       entry.innerHTML = `${ts()} TX confirmed · <a class="tx-link" href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">${sig.slice(0, 20)}…</a>`;
       log.prepend(entry);
     }
 
-    addLog(`Done — ${txHashes.length} tx(s) confirmed`, 'success');
+    addLog(`Done — ${sigs.length} tx(s) confirmed`, 'success');
     await refreshBalance();
 
-    // Refresh positions after removal
+    // Refresh after removal
     const keypair2 = getKeypair();
     if (keypair2) {
       try {
-        const refreshed = await loadPositionsDirect(getConnection(), selectedPool.address, keypair2.publicKey);
-        selectedPool = refreshed;
-        poolInstance = refreshed.pool;
-        posCount.textContent = refreshed.positions.length;
-        posSol.textContent   = `${refreshed.totalSol.toFixed(6)} SOL`;
-        posToken.textContent = formatAmt(refreshed.totalTokenRaw);
-        removeBtn.disabled   = refreshed.positions.length === 0;
-        if (refreshed.positions.length === 0) addLog('Position fully closed', 'info');
+        if (poolType === 'dynamic') {
+          const addr = dynamicData.poolAddress;
+          dynamicData = await loadDynamicAmmPool(getConnection(), addr, keypair2.publicKey);
+          showPositionBox(1, dynamicData.totalSol, dynamicData.totalTokenRaw);
+          removeBtn.disabled = dynamicData.lpBalance.isZero();
+        } else {
+          const refreshed = await loadPositionsDirect(getConnection(), selectedPool.address, keypair2.publicKey);
+          selectedPool = refreshed;
+          poolInstance = refreshed.pool;
+          showPositionBox(refreshed.positions.length, refreshed.totalSol, refreshed.totalTokenRaw);
+          removeBtn.disabled = refreshed.positions.length === 0;
+          if (refreshed.positions.length === 0) addLog('Position fully closed', 'info');
+        }
       } catch {}
     }
   } catch (e) {
