@@ -158,8 +158,8 @@ loadDirectBtn.addEventListener('click', async () => {
       }
       dynamicData = result;
       poolType = 'dynamic';
-      showBox(1, result.totalSol, result.totalTokenRaw);
-      addLog(`Dynamic AMM · ${result.totalSol.toFixed(4)} SOL · ${result.lpBalance.toString()} LP`, 'success');
+      showDynamicBox(result);
+      addLog(`Dynamic AMM · ${result.amountA.toFixed(6)} A · ${result.amountB.toFixed(6)} B · ${result.lpBalance.toString()} LP`, 'success');
     }
 
     removeBtn.disabled = false;
@@ -172,8 +172,26 @@ loadDirectBtn.addEventListener('click', async () => {
 
 function showBox(count, sol, token) {
   posCount.textContent = count;
+  $('pos-sol-label').textContent  = 'SOL in pool';
+  $('pos-tok-label').textContent  = 'Token in pool';
   posSol.textContent   = `${sol.toFixed(6)} SOL`;
   posToken.textContent = formatAmt(token);
+  positionBox.classList.remove('hidden');
+}
+
+function showDynamicBox(d) {
+  const mintA = d.tokenAMintStr, mintB = d.tokenBMintStr;
+  const labelA = mintA === 'So11111111111111111111111111111111111111112' ? 'SOL'
+    : mintA === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' ? 'USDC'
+    : mintA.slice(0, 4) + '…';
+  const labelB = mintB === 'So11111111111111111111111111111111111111112' ? 'SOL'
+    : mintB === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' ? 'USDC'
+    : mintB.slice(0, 4) + '…';
+  posCount.textContent = 1;
+  $('pos-sol-label').textContent  = labelA + ' in pool';
+  $('pos-tok-label').textContent  = labelB + ' in pool';
+  posSol.textContent   = d.amountA.toFixed(6) + ' ' + labelA;
+  posToken.textContent = d.amountB.toFixed(6) + ' ' + labelB;
   positionBox.classList.remove('hidden');
 }
 
@@ -189,13 +207,11 @@ removeBtn.addEventListener('click', async () => {
   const amtRaw = amountInput.value.trim();
   if (!amtRaw) { addLog('Enter an amount', 'warn'); return; }
 
-  const totalSol = poolType === 'dynamic' ? dynamicData.totalSol : dlmmPool.totalSol;
-
   let bps;
   try {
     bps = poolType === 'dynamic'
-      ? parseDynamicBps(amtRaw, totalSol)
-      : parseBps(amtRaw, totalSol);
+      ? parseDynamicBps(amtRaw, dynamicData)
+      : parseBps(amtRaw, dlmmPool.totalSol);
   } catch (e) {
     addLog(`Amount error: ${e.message}`, 'error');
     return;
@@ -231,7 +247,7 @@ removeBtn.addEventListener('click', async () => {
       try {
         if (poolType === 'dynamic') {
           dynamicData = await loadDynamicAmmPool(getConnection(), dynamicData.poolAddress, k2.publicKey);
-          showBox(1, dynamicData.totalSol, dynamicData.totalTokenRaw);
+          showDynamicBox(dynamicData);
           if (dynamicData.lpBalance.isZero()) { removeBtn.disabled = true; addLog('Position fully removed', 'info'); }
         } else {
           const r = await loadPositionsDirect(getConnection(), dlmmPool.address, k2.publicKey);

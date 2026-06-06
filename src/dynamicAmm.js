@@ -1,6 +1,6 @@
 /**
- * Meteora Dynamic AMM — raw implementation using only @solana/web3.js + @solana/spl-token.
- * No Meteora SDK. Parses pool/vault accounts directly from on-chain bytes.
+ * Meteora Dynamic AMM — raw Solana only, no SDK.
+ * Supports any token pair: SOL, USDC, or anything else.
  */
 import {
   PublicKey,
@@ -19,23 +19,30 @@ import BN from 'bn.js';
 
 const DYNAMIC_AMM_PROGRAM = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
 const VAULT_PROGRAM       = new PublicKey('24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi');
-const WSOL_MINT           = new PublicKey('So11111111111111111111111111111111111111112');
+export const WSOL_MINT    = 'So11111111111111111111111111111111111111112';
+export const USDC_MINT    = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+// Known decimals for common quote tokens; fallback to 6
+const KNOWN_DECIMALS = {
+  [WSOL_MINT]: 9,
+  [USDC_MINT]: 6,
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6,  // USDT
+};
 
 // ── Account parsers ───────────────────────────────────────────────────────────
 
 function parsePool(data) {
-  // 8-byte discriminator, then 7 PublicKeys in order
-  let o = 8;
+  let o = 8; // skip 8-byte discriminator
   const pk = () => { const k = new PublicKey(data.slice(o, o + 32)); o += 32; return k; };
   return {
-    lpMint:    pk(), tokenAMint: pk(), tokenBMint: pk(),
-    aVault:    pk(), bVault:     pk(),
-    aVaultLp:  pk(), bVaultLp:   pk(),
+    lpMint:     pk(), tokenAMint: pk(), tokenBMint: pk(),
+    aVault:     pk(), bVault:     pk(),
+    aVaultLp:   pk(), bVaultLp:   pk(),
   };
 }
 
 function parseVault(data) {
-  // [0:8] disc, [8] enabled u8, [9:11] bumps (2×u8), [11:19] totalAmount u64,
+  // [0:8] disc, [8] enabled, [9:11] bumps (2×u8), [11:19] totalAmount u64,
   // [19:51] tokenVault, [51:83] feeVault, [83:115] tokenMint, [115:147] lpMint
   return {
     totalAmount: new BN(data.slice(11, 19), 'le'),
@@ -44,7 +51,7 @@ function parseVault(data) {
   };
 }
 
-// ── Anchor discriminator via browser native crypto ────────────────────────────
+// ── Anchor discriminator (browser native crypto) ──────────────────────────────
 
 async function disc(name) {
   const bytes = new TextEncoder().encode(`global:${name}`);
@@ -57,33 +64,29 @@ async function disc(name) {
 export async function loadDynamicAmmPool(connection, poolAddress, userPublicKey) {
   const poolPk = new PublicKey(poolAddress);
 
-  // 1. Fetch pool account
+  // Fetch pool account
   const poolInfo = await connection.getAccountInfo(poolPk);
   if (!poolInfo) throw new Error('Pool account not found');
   const pool = parsePool(poolInfo.data);
 
-  const isASOL = pool.tokenAMint.equals(WSOL_MINT);
-  const isBSOL = pool.tokenBMint.equals(WSOL_MINT);
-  if (!isASOL && !isBSOL) throw new Error('Pool does not contain SOL/WSOL');
+  const aMintStr = pool.tokenAMint.toBase58();
+  const bMintStr = pool.tokenBMint.toBase58();
 
-  // 2. Fetch both vault accounts + vault LP mint supplies in one call
-  const [vaultAInfo, vaultBInfo] = await connection.getMultipleAccountsInfo([
-    pool.aVault, pool.bVault,
-  ]);
+  // Fetch vault accounts
+  const [vaultAInfo, vaultBInfo] = await connection.getMultipleAccountsInfo([pool.aVault, pool.bVault]);
   if (!vaultAInfo || !vaultBInfo) throw new Error('Vault accounts not found');
-
   const vaultA = parseVault(vaultAInfo.data);
   const vaultB = parseVault(vaultBInfo.data);
 
-  // 3. Get pool's LP total supply + pool's vault LP balances (for accurate share calc)
-  const [lpSupplyResp, poolVaultALpBalance, poolVaultBLpBalance] = await Promise.all([
+  // Pool LP supply + pool's vault LP balances
+  const [lpSupplyResp, poolVaultALpBal, poolVaultBLpBal] = await Promise.all([
     connection.getTokenSupply(pool.lpMint),
     connection.getTokenAccountBalance(pool.aVaultLp),
     connection.getTokenAccountBalance(pool.bVaultLp),
   ]);
   const totalLpSupply = new BN(lpSupplyResp.value.amount);
 
-  // vault A supply (LP mint of vault A)
+  // Vault LP supplies
   const [vaultALpSupplyResp, vaultBLpSupplyResp] = await Promise.all([
     connection.getTokenSupply(vaultA.lpMint),
     connection.getTokenSupply(vaultB.lpMint),
@@ -91,51 +94,53 @@ export async function loadDynamicAmmPool(connection, poolAddress, userPublicKey)
   const vaultALpSupply = new BN(vaultALpSupplyResp.value.amount);
   const vaultBLpSupply = new BN(vaultBLpSupplyResp.value.amount);
 
-  // Pool's actual token amounts in vault
-  const poolVaultALp = new BN(poolVaultALpBalance.value.amount);
-  const poolVaultBLp = new BN(poolVaultBLpBalance.value.amount);
-
+  // Pool's actual token amounts in each vault
+  const poolVaultALp = new BN(poolVaultALpBal.value.amount);
+  const poolVaultBLp = new BN(poolVaultBLpBal.value.amount);
   const poolAmtA = vaultALpSupply.isZero() ? new BN(0)
     : vaultA.totalAmount.mul(poolVaultALp).div(vaultALpSupply);
   const poolAmtB = vaultBLpSupply.isZero() ? new BN(0)
     : vaultB.totalAmount.mul(poolVaultBLp).div(vaultBLpSupply);
 
-  // 4. User's LP balance
+  // User LP balance
   const userLpAta = await getAssociatedTokenAddress(
     pool.lpMint, userPublicKey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
   );
   let lpBalance = new BN(0);
   try {
-    const balResp = await connection.getTokenAccountBalance(userLpAta);
-    lpBalance = new BN(balResp.value.amount);
-  } catch { /* ATA doesn't exist → zero balance */ }
+    const r = await connection.getTokenAccountBalance(userLpAta);
+    lpBalance = new BN(r.value.amount);
+  } catch { /* no ATA = zero */ }
 
-  // 5. Calculate user's share
-  let totalSol = 0;
-  let totalTokenRaw = 0;
+  // User's share of each token (raw lamports/smallest unit)
+  let rawA = 0, rawB = 0;
   if (!lpBalance.isZero() && !totalLpSupply.isZero()) {
-    const solAmt   = isASOL ? poolAmtA : poolAmtB;
-    const tokenAmt = isASOL ? poolAmtB : poolAmtA;
-    totalSol      = lpBalance.mul(solAmt).div(totalLpSupply).toNumber() / LAMPORTS_PER_SOL;
-    totalTokenRaw = lpBalance.mul(tokenAmt).div(totalLpSupply).toNumber();
+    rawA = lpBalance.mul(poolAmtA).div(totalLpSupply).toNumber();
+    rawB = lpBalance.mul(poolAmtB).div(totalLpSupply).toNumber();
   }
 
+  const decimalsA = KNOWN_DECIMALS[aMintStr] ?? 6;
+  const decimalsB = KNOWN_DECIMALS[bMintStr] ?? 6;
+
   return {
-    poolAddress, pool, vaultA, vaultB,
-    lpBalance, totalLpSupply,
-    totalSol, totalTokenRaw, isASOL, userLpAta,
+    poolAddress, pool, vaultA, vaultB, lpBalance, totalLpSupply,
+    tokenAMintStr: aMintStr, tokenBMintStr: bMintStr,
+    amountA: rawA / Math.pow(10, decimalsA),
+    amountB: rawB / Math.pow(10, decimalsB),
+    decimalsA, decimalsB,
+    rawA, rawB,
+    userLpAta,
   };
 }
 
 export async function removeDynamicAmmLiquidity(connection, poolData, keypair, bps) {
-  const { poolAddress, pool, vaultA, vaultB, lpBalance, isASOL, userLpAta } = poolData;
+  const { poolAddress, pool, vaultA, vaultB, lpBalance, userLpAta } = poolData;
   if (lpBalance.isZero()) throw new Error('No LP tokens to remove');
 
-  const clampedBps  = Math.min(Math.max(Math.round(bps), 1), 10000);
-  const lpToRemove  = lpBalance.muln(clampedBps).divn(10000);
-  const poolPk      = new PublicKey(poolAddress);
+  const clampedBps = Math.min(Math.max(Math.round(bps), 1), 10000);
+  const lpToRemove = lpBalance.muln(clampedBps).divn(10000);
+  const poolPk     = new PublicKey(poolAddress);
 
-  // User's token A and B ATAs
   const userTokenAta = await getAssociatedTokenAddress(
     pool.tokenAMint, keypair.publicKey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
   );
@@ -144,7 +149,6 @@ export async function removeDynamicAmmLiquidity(connection, poolData, keypair, b
   );
 
   const [ataAInfo, ataBInfo] = await connection.getMultipleAccountsInfo([userTokenAta, userTokenBta]);
-
   const preIxs  = [];
   const postIxs = [];
 
@@ -155,15 +159,16 @@ export async function removeDynamicAmmLiquidity(connection, poolData, keypair, b
     keypair.publicKey, userTokenBta, keypair.publicKey, pool.tokenBMint
   ));
 
-  // Auto-unwrap WSOL after withdrawal
-  const wsolAta = pool.tokenAMint.equals(WSOL_MINT) ? userTokenAta : userTokenBta;
-  postIxs.push(createCloseAccountInstruction(wsolAta, keypair.publicKey, keypair.publicKey));
+  // Unwrap WSOL if present
+  if (pool.tokenAMint.toBase58() === WSOL_MINT) {
+    postIxs.push(createCloseAccountInstruction(userTokenAta, keypair.publicKey, keypair.publicKey));
+  } else if (pool.tokenBMint.toBase58() === WSOL_MINT) {
+    postIxs.push(createCloseAccountInstruction(userTokenBta, keypair.publicKey, keypair.publicKey));
+  }
 
-  // Build removeBalanceLiquidity instruction data
   const ixDisc = await disc('remove_balance_liquidity');
   const args   = Buffer.alloc(24);
   lpToRemove.toArrayLike(Buffer, 'le', 8).copy(args, 0);
-  // minimumATokenOut = 0, minimumBTokenOut = 0 (accept any amount)
   new BN(0).toArrayLike(Buffer, 'le', 8).copy(args, 8);
   new BN(0).toArrayLike(Buffer, 'le', 8).copy(args, 16);
 
@@ -171,22 +176,22 @@ export async function removeDynamicAmmLiquidity(connection, poolData, keypair, b
     programId: DYNAMIC_AMM_PROGRAM,
     data: Buffer.concat([ixDisc, args]),
     keys: [
-      { pubkey: poolPk,              isMut: true,  isSigner: false },
-      { pubkey: pool.lpMint,         isMut: true,  isSigner: false },
-      { pubkey: userLpAta,           isMut: true,  isSigner: false },
-      { pubkey: pool.aVaultLp,       isMut: true,  isSigner: false },
-      { pubkey: pool.bVaultLp,       isMut: true,  isSigner: false },
-      { pubkey: pool.aVault,         isMut: true,  isSigner: false },
-      { pubkey: pool.bVault,         isMut: true,  isSigner: false },
-      { pubkey: vaultA.lpMint,       isMut: true,  isSigner: false },
-      { pubkey: vaultB.lpMint,       isMut: true,  isSigner: false },
-      { pubkey: vaultA.tokenVault,   isMut: true,  isSigner: false },
-      { pubkey: vaultB.tokenVault,   isMut: true,  isSigner: false },
-      { pubkey: userTokenAta,        isMut: true,  isSigner: false },
-      { pubkey: userTokenBta,        isMut: true,  isSigner: false },
-      { pubkey: keypair.publicKey,   isMut: false, isSigner: true  },
-      { pubkey: VAULT_PROGRAM,       isMut: false, isSigner: false },
-      { pubkey: TOKEN_PROGRAM_ID,    isMut: false, isSigner: false },
+      { pubkey: poolPk,            isMut: true,  isSigner: false },
+      { pubkey: pool.lpMint,       isMut: true,  isSigner: false },
+      { pubkey: userLpAta,         isMut: true,  isSigner: false },
+      { pubkey: pool.aVaultLp,     isMut: true,  isSigner: false },
+      { pubkey: pool.bVaultLp,     isMut: true,  isSigner: false },
+      { pubkey: pool.aVault,       isMut: true,  isSigner: false },
+      { pubkey: pool.bVault,       isMut: true,  isSigner: false },
+      { pubkey: vaultA.lpMint,     isMut: true,  isSigner: false },
+      { pubkey: vaultB.lpMint,     isMut: true,  isSigner: false },
+      { pubkey: vaultA.tokenVault, isMut: true,  isSigner: false },
+      { pubkey: vaultB.tokenVault, isMut: true,  isSigner: false },
+      { pubkey: userTokenAta,      isMut: true,  isSigner: false },
+      { pubkey: userTokenBta,      isMut: true,  isSigner: false },
+      { pubkey: keypair.publicKey, isMut: false, isSigner: true  },
+      { pubkey: VAULT_PROGRAM,     isMut: false, isSigner: false },
+      { pubkey: TOKEN_PROGRAM_ID,  isMut: false, isSigner: false },
     ],
   });
 
@@ -203,15 +208,33 @@ export async function removeDynamicAmmLiquidity(connection, poolData, keypair, b
 
   const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
   await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-
   return sig;
 }
 
-export function parseDynamicBps(input, totalSol) {
+// Parse input to bps — supports "all", "50%", or a token amount vs amountA/B
+export function parseDynamicBps(input, poolData) {
   const s = input.trim().toLowerCase();
   if (s === 'all') return 10000;
-  const sol = parseFloat(s);
-  if (isNaN(sol) || sol <= 0) throw new Error('Enter a SOL amount or "all"');
-  if (totalSol <= 0) throw new Error('No SOL in pool');
-  return Math.min(Math.round((sol / totalSol) * 10000), 10000);
+
+  if (s.endsWith('%')) {
+    const pct = parseFloat(s);
+    if (isNaN(pct) || pct <= 0) throw new Error('Invalid percentage');
+    return Math.min(Math.round(pct * 100), 10000);
+  }
+
+  const n = parseFloat(s);
+  if (isNaN(n) || n <= 0) throw new Error('Enter an amount, % or "all"');
+
+  // Try to match against whichever token makes sense
+  const { amountA, amountB, tokenAMintStr, tokenBMintStr } = poolData;
+  const isSOLA = tokenAMintStr === WSOL_MINT, isSOLB = tokenBMintStr === WSOL_MINT;
+  const isUSDCA = tokenAMintStr === USDC_MINT, isUSDCB = tokenBMintStr === USDC_MINT;
+
+  let quoteAmt = 0;
+  if (isSOLA || isUSDCA) quoteAmt = amountA;
+  else if (isSOLB || isUSDCB) quoteAmt = amountB;
+  else quoteAmt = amountA; // fallback: treat token A as quote
+
+  if (quoteAmt <= 0) throw new Error('No tokens in pool to calculate from');
+  return Math.min(Math.round((n / quoteAmt) * 10000), 10000);
 }
