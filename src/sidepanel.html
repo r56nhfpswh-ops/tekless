@@ -72,7 +72,18 @@
             autocomplete="off"
             spellcheck="false"
           />
-          <button class="btn-secondary" id="load-pool-btn" disabled>Load</button>
+          <button class="btn-secondary" id="load-pool-btn" disabled>Scan</button>
+        </div>
+        <div style="margin-top:6px;font-size:11px;color:var(--muted)">or enter pool address directly:</div>
+        <div class="input-group" style="margin-top:4px">
+          <input
+            type="text"
+            id="pool-addr-input"
+            placeholder="Pool address (optional)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-secondary" id="load-direct-btn" disabled>Load</button>
         </div>
         <div id="pool-list" class="hidden" style="margin-top:8px"></div>
         <div id="position-box" class="hidden position-box">

@@ -10,6 +10,7 @@ import {
 import {
   findUserPoolsForToken,
   createPoolInstance,
+  loadPositionsDirect,
   removeLiquidity,
   parseBps,
 } from './meteora.js';
@@ -36,9 +37,11 @@ const rpcStatusRow = $('rpc-status-row');
 const rpcDot       = $('rpc-dot');
 const rpcStatusTxt = $('rpc-status-text');
 
-const mintInput    = $('mint-input');
-const loadPoolBtn  = $('load-pool-btn');
-const poolList     = $('pool-list');
+const mintInput      = $('mint-input');
+const loadPoolBtn    = $('load-pool-btn');
+const poolAddrInput  = $('pool-addr-input');
+const loadDirectBtn  = $('load-direct-btn');
+const poolList       = $('pool-list');
 const positionBox  = $('position-box');
 const posCount     = $('pos-count');
 const posSol       = $('pos-sol');
@@ -104,7 +107,8 @@ connectRpc.addEventListener('click', async () => {
     rpcDot.className = 'status-dot ok';
     rpcStatusTxt.textContent = `Connected · slot ${slot.toLocaleString()}`;
     rpcStatusRow.classList.remove('hidden');
-    loadPoolBtn.disabled = false;
+    loadPoolBtn.disabled  = false;
+    loadDirectBtn.disabled = false;
     addLog('RPC connected', 'success');
     if (getKeypair()) await refreshBalance();
   } catch (e) {
@@ -143,19 +147,21 @@ loadPoolBtn.addEventListener('click', async () => {
 
   try {
     addLog('Scanning all your Meteora positions on-chain…', 'info');
-    const pools = await findUserPoolsForToken(getConnection(), mint, keypair.publicKey);
+    const { pools, totalPositions } = await findUserPoolsForToken(getConnection(), mint, keypair.publicKey);
+
+    addLog(`Scanned ${totalPositions} total position(s) across all DLMM pools`, 'info');
 
     if (pools.length === 0) {
-      addLog('No positions found in Meteora pools for this token', 'warn');
+      addLog(`No positions matched this token CA. Try entering the pool address directly below.`, 'warn');
       return;
     }
 
-    addLog(`Found ${pools.length} pool(s) with your positions`, 'success');
+    addLog(`Found ${pools.length} matching pool(s)`, 'success');
     renderPoolList(pools);
   } catch (e) {
     addLog(`Error: ${e.message}`, 'error');
   } finally {
-    setLoading(loadPoolBtn, false, 'Load');
+    setLoading(loadPoolBtn, false, 'Scan');
   }
 });
 
@@ -196,6 +202,48 @@ async function selectPool(pool, el) {
     addLog(`Pool load error: ${e.message}`, 'error');
   }
 }
+
+// ── Direct pool address load ──────────────────────────────────────────────────
+loadDirectBtn.addEventListener('click', async () => {
+  const addr = poolAddrInput.value.trim();
+  if (!addr) return;
+  const keypair = getKeypair();
+  if (!keypair) { addLog('Import a wallet first', 'warn'); return; }
+
+  setLoading(loadDirectBtn, true, 'Loading…');
+  poolList.innerHTML = '';
+  poolList.classList.add('hidden');
+  positionBox.classList.add('hidden');
+  selectedPool = null;
+  poolInstance  = null;
+  removeBtn.disabled = true;
+
+  try {
+    addLog(`Loading positions for pool ${addr.slice(0, 12)}…`, 'info');
+    const result = await loadPositionsDirect(getConnection(), addr, keypair.publicKey);
+
+    if (result.positions.length === 0) {
+      addLog('No positions found in this pool for your wallet', 'warn');
+      return;
+    }
+
+    // Render as single item and auto-select it
+    selectedPool = result;
+    poolInstance = result.pool;
+
+    posCount.textContent = result.positions.length;
+    posSol.textContent   = `${result.totalSol.toFixed(6)} SOL`;
+    posToken.textContent = formatAmt(result.totalTokenRaw);
+    positionBox.classList.remove('hidden');
+    removeBtn.disabled = false;
+
+    addLog(`${result.positions.length} position(s) · ${result.totalSol.toFixed(4)} SOL in pool`, 'success');
+  } catch (e) {
+    addLog(`Error: ${e.message}`, 'error');
+  } finally {
+    setLoading(loadDirectBtn, false, 'Load');
+  }
+});
 
 // ── All button ────────────────────────────────────────────────────────────────
 $('all-btn').addEventListener('click', () => { amountInput.value = 'all'; });
@@ -239,21 +287,16 @@ removeBtn.addEventListener('click', async () => {
     // Refresh positions after removal
     const keypair2 = getKeypair();
     if (keypair2) {
-      const updated = await findUserPoolsForToken(
-        getConnection(), mintInput.value.trim(), keypair2.publicKey
-      );
-      const same = updated.find((p) => p.address === selectedPool.address);
-      if (same) {
-        selectedPool = same;
-        posCount.textContent = same.positions.length;
-        posSol.textContent   = `${same.totalSol.toFixed(6)} SOL`;
-        posToken.textContent = formatAmt(same.totalTokenRaw);
-        removeBtn.disabled   = same.positions.length === 0;
-      } else {
-        positionBox.classList.add('hidden');
-        removeBtn.disabled = true;
-        addLog('Position fully closed', 'info');
-      }
+      try {
+        const refreshed = await loadPositionsDirect(getConnection(), selectedPool.address, keypair2.publicKey);
+        selectedPool = refreshed;
+        poolInstance = refreshed.pool;
+        posCount.textContent = refreshed.positions.length;
+        posSol.textContent   = `${refreshed.totalSol.toFixed(6)} SOL`;
+        posToken.textContent = formatAmt(refreshed.totalTokenRaw);
+        removeBtn.disabled   = refreshed.positions.length === 0;
+        if (refreshed.positions.length === 0) addLog('Position fully closed', 'info');
+      } catch {}
     }
   } catch (e) {
     addLog(`Remove error: ${e.message}`, 'error');

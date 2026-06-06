@@ -7,6 +7,7 @@ export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 // Find user's Meteora DLMM positions for a token — purely on-chain via user's RPC
 export async function findUserPoolsForToken(connection, mintAddress, userPublicKey) {
   const positionsMap = await DLMM.getAllLbPairPositionsByUser(connection, userPublicKey);
+  const totalPositions = [...positionsMap.values()].reduce((n, p) => n + p.lbPairPositionsData.length, 0);
 
   const results = [];
 
@@ -47,12 +48,42 @@ export async function findUserPoolsForToken(connection, mintAddress, userPublicK
     });
   }
 
-  return results;
+  return { pools: results, totalPositions };
 }
+
 
 // Create a DLMM pool instance (needed to call removeLiquidity)
 export async function createPoolInstance(connection, poolAddress) {
   return DLMM.create(connection, new PublicKey(poolAddress));
+}
+
+// Load positions for a known pool address directly
+export async function loadPositionsDirect(connection, poolAddress, userPublicKey) {
+  const pool = await DLMM.create(connection, new PublicKey(poolAddress));
+  const { userPositions } = await pool.getPositionsByUserAndLbPair(userPublicKey);
+
+  const isXSol = pool.tokenX.publicKey.toBase58() === WSOL_MINT;
+  let totalSolLamports = 0;
+  let totalTokenRaw    = 0;
+
+  for (const pos of userPositions) {
+    for (const bin of pos.positionData.positionBinData) {
+      const xAmt = parseInt(bin.positionXAmount || '0', 10);
+      const yAmt = parseInt(bin.positionYAmount || '0', 10);
+      if (isXSol) { totalSolLamports += xAmt; totalTokenRaw += yAmt; }
+      else         { totalSolLamports += yAmt; totalTokenRaw += xAmt; }
+    }
+  }
+
+  return {
+    address: poolAddress,
+    name: `${pool.tokenX.publicKey.toBase58().slice(0,4)}…/${pool.tokenY.publicKey.toBase58().slice(0,4)}…`,
+    positions: userPositions,
+    pool,
+    totalSol: totalSolLamports / LAMPORTS_PER_SOL,
+    totalTokenRaw,
+    isXSol,
+  };
 }
 
 // Remove liquidity from all positions at given basis points (1–10000)
