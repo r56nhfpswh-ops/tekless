@@ -8,11 +8,10 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://dlmm-api.meteora.ag/*",
+    "https://api.dexscreener.com/*",
     "https://*.helius-rpc.com/*",
     "https://mainnet.helius-rpc.com/*",
-    "https://api.mainnet-beta.solana.com/*",
-    "https://solana-api.projectserum.com/*"
+    "https://api.mainnet-beta.solana.com/*"
   ],
   "background": {
     "service_worker": "background.js"

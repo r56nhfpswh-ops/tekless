@@ -2,51 +2,39 @@ import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import BN from 'bn.js';
 
-const METEORA_API = 'https://dlmm-api.meteora.ag';
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
-// Find all Meteora DLMM pools containing the given mint (paired with SOL)
+// Find all Meteora DLMM pools for a token using DexScreener (public, no auth)
 export async function findPools(mintAddress) {
-  // Try search_term param first, fall back to fetching all and filtering
-  let data = null;
+  const res = await fetch(
+    `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`
+  );
+  if (!res.ok) throw new Error(`DexScreener error: ${res.status}`);
 
-  const attempts = [
-    `${METEORA_API}/pair/all_by_groups?search_term=${mintAddress}&sort_key=liquidity&order_by=desc&offset=0&limit=50`,
-    `${METEORA_API}/pair/all_by_groups?token=${mintAddress}`,
-    `${METEORA_API}/pair/all?search_term=${mintAddress}&sort_key=liquidity&order_by=desc&offset=0&limit=50&include_unknown=true`,
-  ];
-
-  for (const url of attempts) {
-    const res = await fetch(url);
-    if (res.ok) { data = await res.json(); break; }
-  }
-
-  if (!data) throw new Error('Could not reach Meteora API. Check your RPC/network.');
-
-  // API returns either { groups: [...] } or a flat array of pairs
-  const rawPairs = Array.isArray(data)
-    ? data
-    : (data.groups || []).flatMap((g) => g.pairs || []);
-
+  const data = await res.json();
   const pools = [];
-  for (const pair of rawPairs) {
-    const isSOLPair = pair.mint_x === WSOL_MINT || pair.mint_y === WSOL_MINT;
-    // Also match if either mint matches the user's token
-    const hasToken = pair.mint_x === mintAddress || pair.mint_y === mintAddress;
-    if (isSOLPair && hasToken) {
-      pools.push({
-        address: pair.address,
-        name: pair.name,
-        mintX: pair.mint_x,
-        mintY: pair.mint_y,
-        liquidity: parseFloat(pair.liquidity) || 0,
-        fees24h: parseFloat(pair.fees) || 0,
-        isXSol: pair.mint_x === WSOL_MINT,
-      });
-    }
+
+  for (const pair of data.pairs || []) {
+    if (pair.chainId !== 'solana') continue;
+    // Match any Meteora variant (meteora, meteora-dlmm, etc.)
+    if (!pair.dexId?.toLowerCase().includes('meteora')) continue;
+
+    const base = pair.baseToken?.address;
+    const quote = pair.quoteToken?.address;
+    const isSOLPair = base === WSOL_MINT || quote === WSOL_MINT;
+    if (!isSOLPair) continue;
+
+    pools.push({
+      address: pair.pairAddress,
+      name: `${pair.baseToken?.symbol || '?'}/${pair.quoteToken?.symbol || '?'}`,
+      mintX: base,
+      mintY: quote,
+      liquidity: pair.liquidity?.usd || 0,
+      isXSol: base === WSOL_MINT,
+    });
   }
 
-  // Highest liquidity first
+  if (pools.length === 0) throw new Error('No Meteora SOL pools found for this token');
   return pools.sort((a, b) => b.liquidity - a.liquidity);
 }
 
