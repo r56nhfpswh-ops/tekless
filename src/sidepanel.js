@@ -242,12 +242,9 @@ async function selectPool(pool, el) {
   }
 }
 
-// ── Quick amount buttons ──────────────────────────────────────────────────────
-document.querySelectorAll('.btn-quick').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const pct = btn.dataset.pct;
-    amountInput.value = pct === '100' ? 'all' : `${pct}%`;
-  });
+// ── All button ────────────────────────────────────────────────────────────────
+$('all-btn').addEventListener('click', () => {
+  amountInput.value = 'all';
 });
 
 // ── Remove liquidity ──────────────────────────────────────────────────────────

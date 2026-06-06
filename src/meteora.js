@@ -7,28 +7,42 @@ export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // Find all Meteora DLMM pools containing the given mint (paired with SOL)
 export async function findPools(mintAddress) {
-  const res = await fetch(
-    `${METEORA_API}/pair/all_by_groups?token=${mintAddress}`
-  );
-  if (!res.ok) throw new Error(`Meteora API error: ${res.status}`);
-  const data = await res.json();
+  // Try search_term param first, fall back to fetching all and filtering
+  let data = null;
+
+  const attempts = [
+    `${METEORA_API}/pair/all_by_groups?search_term=${mintAddress}&sort_key=liquidity&order_by=desc&offset=0&limit=50`,
+    `${METEORA_API}/pair/all_by_groups?token=${mintAddress}`,
+    `${METEORA_API}/pair/all?search_term=${mintAddress}&sort_key=liquidity&order_by=desc&offset=0&limit=50&include_unknown=true`,
+  ];
+
+  for (const url of attempts) {
+    const res = await fetch(url);
+    if (res.ok) { data = await res.json(); break; }
+  }
+
+  if (!data) throw new Error('Could not reach Meteora API. Check your RPC/network.');
+
+  // API returns either { groups: [...] } or a flat array of pairs
+  const rawPairs = Array.isArray(data)
+    ? data
+    : (data.groups || []).flatMap((g) => g.pairs || []);
 
   const pools = [];
-  for (const group of data.groups || []) {
-    for (const pair of group.pairs || []) {
-      const isSOLPair =
-        pair.mint_x === WSOL_MINT || pair.mint_y === WSOL_MINT;
-      if (isSOLPair) {
-        pools.push({
-          address: pair.address,
-          name: pair.name,
-          mintX: pair.mint_x,
-          mintY: pair.mint_y,
-          liquidity: parseFloat(pair.liquidity) || 0,
-          fees24h: parseFloat(pair.fees) || 0,
-          isXSol: pair.mint_x === WSOL_MINT,
-        });
-      }
+  for (const pair of rawPairs) {
+    const isSOLPair = pair.mint_x === WSOL_MINT || pair.mint_y === WSOL_MINT;
+    // Also match if either mint matches the user's token
+    const hasToken = pair.mint_x === mintAddress || pair.mint_y === mintAddress;
+    if (isSOLPair && hasToken) {
+      pools.push({
+        address: pair.address,
+        name: pair.name,
+        mintX: pair.mint_x,
+        mintY: pair.mint_y,
+        liquidity: parseFloat(pair.liquidity) || 0,
+        fees24h: parseFloat(pair.fees) || 0,
+        isXSol: pair.mint_x === WSOL_MINT,
+      });
     }
   }
 
@@ -126,20 +140,14 @@ export async function removeLiquidity(
 }
 
 // Parse user input into basis points
-// Supports: "all", "100%", "50%", "1.5" (SOL amount), "0.5"
+// Accepts: "all" → 100%, or a SOL number like "1", "0.5", "2.5"
 export function parseBps(input, totalSol) {
   const s = input.trim().toLowerCase();
 
-  if (s === 'all' || s === '100%') return 10000;
-
-  if (s.endsWith('%')) {
-    const pct = parseFloat(s);
-    if (isNaN(pct) || pct <= 0) throw new Error('Invalid percentage');
-    return Math.round(Math.min(pct, 100) * 100);
-  }
+  if (s === 'all') return 10000;
 
   const sol = parseFloat(s);
-  if (isNaN(sol) || sol <= 0) throw new Error('Enter a valid SOL amount or percentage');
+  if (isNaN(sol) || sol <= 0) throw new Error('Enter a SOL amount (e.g. 1, 0.5) or "all"');
   if (totalSol <= 0) throw new Error('No SOL in positions');
 
   const bps = Math.round((sol / totalSol) * 10000);

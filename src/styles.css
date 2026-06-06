@@ -336,27 +336,6 @@ button:disabled {
 .position-value { color: var(--text); font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; }
 .position-value.sol { color: var(--accent); }
 
-/* Quick amount buttons */
-.quick-btns {
-  display: flex;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.btn-quick {
-  flex: 1;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 5px 4px;
-  font-size: 11px;
-  border-radius: var(--radius-sm);
-}
-
-.btn-quick:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
 
 /* Log */
 .log {

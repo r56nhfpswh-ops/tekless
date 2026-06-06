@@ -94,17 +94,14 @@
       <!-- STEP 4: Remove -->
       <section class="card" id="remove-card">
         <h3>4 · Remove Liquidity</h3>
-        <input
-          type="text"
-          id="amount-input"
-          placeholder="SOL amount, % or 'all'  (e.g. 1, 0.5, 50%, all)"
-          autocomplete="off"
-        />
-        <div class="quick-btns">
-          <button class="btn-quick" data-pct="25">25%</button>
-          <button class="btn-quick" data-pct="50">50%</button>
-          <button class="btn-quick" data-pct="75">75%</button>
-          <button class="btn-quick" data-pct="100">All</button>
+        <div class="input-group">
+          <input
+            type="text"
+            id="amount-input"
+            placeholder="SOL amount (e.g. 1, 0.5, 2)"
+            autocomplete="off"
+          />
+          <button class="btn-secondary" id="all-btn">All</button>
         </div>
         <button class="btn-danger" id="remove-btn" disabled>Remove Liquidity</button>
       </section>
