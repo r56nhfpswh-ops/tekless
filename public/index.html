@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Phone Breach Checker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>Phone Breach Checker</h1>
+    <p class="subtitle">
+      Checks a phone number against data-breach lookup services using your own API keys.
+      Nothing is stored — the number is only sent to the providers you've configured.
+    </p>
+
+    <form id="check-form">
+      <div class="field-row">
+        <input
+          type="tel"
+          id="phone"
+          placeholder="+1 415 555 2671"
+          autocomplete="off"
+          required
+        />
+        <select id="country" title="Default country (used if you don't type a + country code)">
+          <option value="US">US</option>
+          <option value="GB">GB</option>
+          <option value="CA">CA</option>
+          <option value="AU">AU</option>
+          <option value="DE">DE</option>
+          <option value="FR">FR</option>
+          <option value="IN">IN</option>
+        </select>
+        <button type="submit" id="submit-btn">Check</button>
+      </div>
+    </form>
+
+    <div id="provider-status" class="provider-status"></div>
+    <div id="results"></div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
