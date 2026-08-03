@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tekless Queue</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="dot" id="statusDot"></span>
+        <h1>Tekless Queue</h1>
+      </div>
+      <label class="switch" title="Turn the schedule on or off">
+        <input type="checkbox" id="enabled" />
+        <span class="track"><span class="thumb"></span></span>
+      </label>
+    </header>
+
+    <p class="status" id="status">Loading…</p>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="compose">Queue</button>
+      <button class="tab" data-tab="settings">Schedule</button>
+      <button class="tab" data-tab="history">History</button>
+    </nav>
+
+    <section class="panel active" id="panel-compose">
+      <textarea id="draft" rows="4" placeholder="What's happening?"></textarea>
+      <div class="row">
+        <span class="count" id="count">280</span>
+        <button class="primary" id="add">Add to queue</button>
+      </div>
+
+      <div class="queue-head">
+        <h2>Up next <span class="pill" id="queueCount">0</span></h2>
+        <button class="ghost" id="postNow">Post next now</button>
+      </div>
+      <ul class="queue" id="queue"></ul>
+      <p class="empty" id="queueEmpty">Nothing queued yet.</p>
+    </section>
+
+    <section class="panel" id="panel-settings">
+      <label class="field">
+        <span>Post every</span>
+        <div class="inline">
+          <input type="number" id="intervalMinutes" min="1" max="1440" />
+          <em>minutes</em>
+        </div>
+      </label>
+
+      <label class="field">
+        <span>Vary the gap by</span>
+        <div class="inline">
+          <input type="number" id="jitterPercent" min="0" max="60" />
+          <em>%</em>
+        </div>
+        <small>Keeps posts off an exact clock cadence. The average stays the same.</small>
+      </label>
+
+      <label class="field">
+        <span>Max per day</span>
+        <div class="inline">
+          <input type="number" id="dailyCap" min="0" max="100" />
+          <em>0 = no cap</em>
+        </div>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="quietHoursEnabled" />
+        <span>Quiet hours</span>
+      </label>
+      <div class="inline indent">
+        <input type="number" id="quietStart" min="0" max="23" />
+        <em>to</em>
+        <input type="number" id="quietEnd" min="0" max="23" />
+        <em>(24h)</em>
+      </div>
+
+      <label class="field">
+        <span>Typing speed</span>
+        <select id="typingSpeed">
+          <option value="fast">Fast</option>
+          <option value="natural">Natural</option>
+          <option value="slow">Slow</option>
+        </select>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="humanCursor" />
+        <span>Show the cursor moving</span>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="openTabIfMissing" />
+        <span>Open an X tab if none is open</span>
+      </label>
+    </section>
+
+    <section class="panel" id="panel-history">
+      <ul class="history" id="history"></ul>
+      <p class="empty" id="historyEmpty">No posts yet.</p>
+    </section>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
