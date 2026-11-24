@@ -123,22 +123,26 @@
     return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
 
   function step() {
-    const baseVol = 0.0019;                                              // per-tick log volatility
+    // early on (low market cap) it's much wilder; it calms down as it climbs
+    const prog = Math.min(Math.max(Math.log(s.mc / s.startMc) / Math.log(s.targetMc / s.startMc), 0), 1);
+    const early = Math.pow(1 - prog, 1.6);
+    const baseVol = 0.0019 * (1 + 2.6 * early);                          // per-tick log volatility
     s.vol += (1 - s.vol) * 0.02 + Math.abs(gauss()) * 0.06 - 0.03;
     if (Math.random() < 0.004) s.vol += 1.2 + Math.random() * 1.5;      // volatility burst
     s.vol = Math.min(Math.max(s.vol, 0.35), 4);
 
     const x = Math.log(s.mc), gap = Math.log(s.liveTarget) - x;
-    s.swing = s.swing * 0.985 + gauss() * 0.16;                          // rallies & pullbacks
-    if (Math.random() < 0.006) s.swing = -s.swing * 1.4;                 // sharp reversal
-    const drift = Math.min(gap * 0.0004, 0.0016) + 0.0003 + s.swing * baseVol * 0.8;
+    s.swing = s.swing * 0.985 + gauss() * (0.16 + 0.12 * early);         // rallies & pullbacks
+    if (Math.random() < 0.006 + 0.01 * early) s.swing = -s.swing * 1.4;                 // sharp reversal
+    const floor = s.mc < s.startMc * 0.6 ? 0.004 : 0;                   // don't dump too far below the start
+    const drift = (Math.min(gap * 0.0004, 0.0016) + 0.0003) * (1 - 0.8 * early) + floor + s.swing * 0.0019 * 0.85;
     s.ret = s.ret * 0.45 + gauss() * baseVol * s.vol;
     s.mc = Math.exp(x + drift + s.ret);
     if (gap < 0) s.liveTarget *= 1.00003;                                // keeps going after target
 
     const c = candles[candles.length - 1];
     c.c = s.mc; if (s.mc > c.h) c.h = s.mc; if (s.mc < c.l) c.l = s.mc;
-    c.v += (Math.abs(s.ret) / baseVol) * (0.6 + Math.random()) * s.vol * 40 + Math.random() * 6;
+    c.v += (Math.abs(s.ret) / 0.0019) * (0.6 + Math.random()) * s.vol * 40 + Math.random() * 6;
   }
 
   // ---------- formatting ----------
@@ -331,7 +335,7 @@
   if (s.running) {
     const away = Math.max(0, Date.now() - (s.t || Date.now()));
     const tpc = CANDLE_MS / TICK_MS;
-    const nCandles = Math.min(Math.floor(away / CANDLE_MS), 20000);
+    const nCandles = Math.min(Math.floor(away / CANDLE_MS), 100000);
     const start = Date.now() - nCandles * CANDLE_MS;
     for (let i = 0; i < nCandles; i++) {
       newCandle(start + i * CANDLE_MS);
@@ -341,7 +345,7 @@
 
   resize();
   renderText();
-  setRunning(s.running);
+  setRunning(true);   // always runs 24/7; Stop only pauses until the page is opened again
   wake();
   requestAnimationFrame(frame);
 })();
