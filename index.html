@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live PnL</title>
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel: #11151c;
+    --line: #1c222c;
+    --text: #e6e9ee;
+    --muted: #7b8494;
+    --up: #16c784;
+    --down: #ea3943;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+
+  header { padding: 20px 20px 8px; display: flex; flex-wrap: wrap; gap: 16px;
+    align-items: flex-end; justify-content: space-between; }
+  .pnl-wrap { min-width: 0; }
+  .label { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  #pnl { font-size: clamp(40px, 9vw, 84px); font-weight: 700; line-height: 1.05;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em; transition: color .15s; }
+  #pnl.up { color: var(--up); } #pnl.down { color: var(--down); }
+  #sub { font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 4px; }
+  #sub b { font-weight: 600; }
+
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .field { display: flex; align-items: center; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 0 12px; height: 44px; }
+  .field span { color: var(--muted); margin-right: 6px; }
+  .field input { background: transparent; border: 0; outline: 0; color: var(--text); font-size: 16px;
+    width: 130px; font-variant-numeric: tabular-nums; }
+  button { height: 44px; padding: 0 22px; border-radius: 10px; border: 0; font-size: 15px;
+    font-weight: 700; cursor: pointer; color: #fff; }
+  #toggle.start { background: var(--up); color: #04140c; }
+  #toggle.stop { background: var(--down); }
+  #reset { background: var(--panel); border: 1px solid var(--line); color: var(--text); font-weight: 600; }
+
+  .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-left: 8px; }
+  .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .live.on i { background: var(--up); box-shadow: 0 0 0 0 rgba(22,199,132,.6); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(22,199,132,.6); } 100% { box-shadow: 0 0 0 10px rgba(22,199,132,0); } }
+
+  main { flex: 1; min-height: 300px; padding: 8px 12px 16px; }
+  .chart { position: relative; width: 100%; height: 100%; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <div class="pnl-wrap">
+    <div class="label">Unrealized PnL <span class="live" id="live"><i></i><em id="liveTxt">PAUSED</em></span></div>
+    <div id="pnl">$0.00</div>
+    <div id="sub">Target <b id="tgt">$0.00</b> · Session high <b id="hi">$0.00</b></div>
+  </div>
+  <div class="controls">
+    <label class="field"><span>$</span><input id="amount" type="number" inputmode="decimal" value="2500" step="any" aria-label="Target PnL in USD"></label>
+    <button id="toggle" class="start">Start</button>
+    <button id="reset">Reset</button>
+  </div>
+</header>
+<main><div class="chart"><canvas id="c"></canvas></div></main>
+
+<script>
+(() => {
+  const TICK_MS = 40;          // new price tick every 40ms (25/s)
+  const MAX_POINTS = 700;      // visible history
+  const KEY = 'livepnl.v1';
+
+  const $ = id => document.getElementById(id);
+  const canvas = $('c'), ctx = canvas.getContext('2d');
+  const pnlEl = $('pnl'), toggleBtn = $('toggle'), amountEl = $('amount');
+
+  // ---------- state ----------
+  let s = { pnl: 0, target: 2500, running: false, hi: 0, ret: 0, vol: 1, t: Date.now() };
+  let pts = [0];
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (saved && typeof saved.pnl === 'number') { s = { ...s, ...saved }; pts = saved.pts?.length ? saved.pts : [s.pnl]; }
+  } catch (e) {}
+  amountEl.value = s.target;
+
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...s, t: Date.now(), pts: pts.slice(-MAX_POINTS) })); } catch (e) {} };
+
+  // ---------- price model ----------
+  const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+
+  function step() {
+    const scale = Math.max(Math.abs(s.target), 50);
+    const baseVol = scale * 0.0028;
+    // volatility clustering: drifts around 1, occasional bursts
+    s.vol += (1 - s.vol) * 0.02 + Math.abs(gauss()) * 0.06 - 0.03;
+    if (Math.random() < 0.004) s.vol += 1.2 + Math.random() * 1.5;
+    s.vol = Math.min(Math.max(s.vol, 0.35), 4);
+
+    const gap = s.target - s.pnl;
+    const dir = Math.sign(s.target) || 1;
+    // swing: slow-changing bias that creates rallies and pullbacks (the zigzags)
+    s.swing = (s.swing || 0) * 0.985 + gauss() * 0.16;
+    if (Math.random() < 0.006) s.swing = -s.swing * 1.4;   // sharp reversal now and then
+    // pull toward target + slow perpetual grind in the target's direction
+    const drift = gap * 0.0022 + dir * scale * 0.00008 + s.swing * baseVol * 0.9;
+    // momentum on returns makes ticks cluster into small legs
+    s.ret = s.ret * 0.45 + gauss() * baseVol * s.vol;
+    s.pnl += drift + s.ret;
+
+    // keep it going 24/7: once target is hit, target quietly keeps moving out
+    if (dir * gap < 0) s.target += dir * scale * 0.00006;
+    if (s.pnl > s.hi) s.hi = s.pnl;
+
+    pts.push(s.pnl);
+    if (pts.length > MAX_POINTS + 2) pts.shift();
+  }
+
+  // ---------- formatting / UI ----------
+  const fmt = n => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtSigned = n => (n >= 0 ? '+' : '') + fmt(n);
+  let lastShown = null;
+  function renderText() {
+    pnlEl.textContent = fmtSigned(s.pnl);
+    pnlEl.className = s.pnl >= 0 ? 'up' : 'down';
+    $('tgt').textContent = fmt(s.target);
+    $('hi').textContent = fmt(s.hi);
+    lastShown = s.pnl;
+  }
+  function setRunning(on) {
+    s.running = on;
+    toggleBtn.textContent = on ? 'Stop' : 'Start';
+    toggleBtn.className = on ? 'stop' : 'start';
+    $('live').classList.toggle('on', on);
+    $('liveTxt').textContent = on ? 'LIVE' : 'PAUSED';
+    lastTick = performance.now();
+    save();
+  }
+  function applyAmount() {
+    const v = parseFloat(amountEl.value);
+    if (Number.isFinite(v)) { s.target = v; renderText(); save(); }
+  }
+
+  toggleBtn.onclick = () => { applyAmount(); setRunning(!s.running); };
+  amountEl.addEventListener('change', applyAmount);
+  amountEl.addEventListener('keydown', e => { if (e.key === 'Enter') { applyAmount(); if (!s.running) setRunning(true); } });
+  $('reset').onclick = () => { applyAmount(); s.pnl = 0; s.hi = 0; s.ret = 0; s.swing = 0; s.vol = 1; pts = [0]; viewMin = viewMax = null; renderText(); save(); };
+
+  // ---------- chart ----------
+  let W = 0, H = 0, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const r = canvas.getBoundingClientRect();
+    W = r.width; H = r.height;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  let viewMin = null, viewMax = null;
+  function niceStep(range, count) {
+    const raw = range / count, p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p;
+    return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * p;
+  }
+
+  function draw(frac) {
+    const PAD_R = 92, PAD_T = 16, PAD_B = 16;
+    const cw = W - PAD_R, ch = H - PAD_T - PAD_B;
+    ctx.clearRect(0, 0, W, H);
+    if (pts.length < 2 || cw <= 0) return;
+
+    // smooth auto-scale
+    let lo = Infinity, hi = -Infinity;
+    for (const p of pts) { if (p < lo) lo = p; if (p > hi) hi = p; }
+    const span = Math.max(hi - lo, Math.max(Math.abs(s.target), 50) * 0.02);
+    const tMin = lo - span * 0.12, tMax = hi + span * 0.12;
+    if (viewMin === null) { viewMin = tMin; viewMax = tMax; }
+    viewMin += (tMin - viewMin) * 0.08; viewMax += (tMax - viewMax) * 0.08;
+    const y = v => PAD_T + (1 - (v - viewMin) / (viewMax - viewMin)) * ch;
+
+    // grid + labels
+    const gs = niceStep(viewMax - viewMin, 6);
+    ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (let g = Math.ceil(viewMin / gs) * gs; g <= viewMax; g += gs) {
+      const yy = Math.round(y(g)) + 0.5;
+      ctx.strokeStyle = Math.abs(g) < gs / 2 ? '#2a3140' : '#171c24';
+      ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(cw, yy); ctx.stroke();
+      ctx.fillStyle = '#5d6676';
+      ctx.fillText(fmt(g).replace('.00', ''), cw + 10, yy);
+    }
+
+    // line path (scrolls smoothly between ticks)
+    const n = pts.length, dx = cw / (MAX_POINTS - 1);
+    const xOf = i => cw - (n - 1 - i + frac) * dx;
+    const last = pts[n - 1];
+    const col = s.pnl >= 0 ? '#16c784' : '#ea3943';
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, cw, H); ctx.clip();
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) { const xx = xOf(i), yy = y(pts[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+    const lastX = xOf(n - 1) + frac * dx;
+    ctx.lineTo(lastX, y(last));
+    // fill
+    const grad = ctx.createLinearGradient(0, PAD_T, 0, H);
+    grad.addColorStop(0, col + '40'); grad.addColorStop(1, col + '00');
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.lineTo(lastX, H); ctx.lineTo(xOf(0), H); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.restore();
+
+    // current price line + tag
+    const ly = y(last);
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = col + 'aa'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(cw, ly); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = col;
+    const tagH = 22; ctx.beginPath(); ctx.roundRect(cw + 4, ly - tagH / 2, PAD_R - 8, tagH, 4); ctx.fill();
+    ctx.fillStyle = '#051109'; ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText(fmt(last), cw + 10, ly);
+
+    // glowing head dot
+    const pulse = s.running ? (Math.sin(performance.now() / 180) + 1) / 2 : 0;
+    ctx.fillStyle = col + '33';
+    ctx.beginPath(); ctx.arc(lastX, ly, 6 + pulse * 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(lastX, ly, 3.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ---------- loop ----------
+  let lastTick = performance.now(), lastSave = 0;
+  function frame(now) {
+    if (s.running) {
+      // catch up on missed ticks (e.g. background tab), capped
+      let k = 0;
+      while (now - lastTick >= TICK_MS && k < 500) { step(); lastTick += TICK_MS; k++; }
+      if (k === 500) lastTick = now;
+      if (k) renderText();
+      if (now - lastSave > 2000) { save(); lastSave = now; }
+    }
+    const frac = s.running ? Math.min((now - lastTick) / TICK_MS, 1) : 0;
+    draw(frac);
+    requestAnimationFrame(frame);
+  }
+
+  // if it was running when the page closed, fast-forward the time it was away (keeps going 24/7)
+  if (s.running) {
+    const missed = Math.min(Math.floor((Date.now() - (s.t || Date.now())) / TICK_MS), 200000);
+    for (let i = 0; i < missed; i++) step();
+  }
+
+  resize();
+  renderText();
+  setRunning(s.running);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
