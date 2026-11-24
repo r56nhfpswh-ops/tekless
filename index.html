@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live PnL</title>
+<style>
+  :root {
+    --bg: #0b0b0f;
+    --panel: #15161c;
+    --line: #23252d;
+    --text: #e8e9ed;
+    --muted: #8a8e99;
+    --up: #2ebd85;
+    --down: #f6465d;
+    --accent: #ff6a3d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+
+  /* OHLC legend */
+  #legend { position: fixed; top: 12px; left: 16px; font-size: 13px; line-height: 1.6; pointer-events: none;
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #legend .name { color: var(--text); margin-right: 8px; }
+  #legend .k { color: var(--muted); margin-left: 6px; }
+  #legend .up { color: var(--up); } #legend .down { color: var(--down); }
+
+  /* PnL widget */
+  #pnlBox { position: fixed; top: 60px; left: 16px; padding: 0; border-radius: 10px;
+    pointer-events: none; text-shadow: 0 2px 12px #000; }
+  #pnlBox .lbl { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 15px; font-weight: 500; }
+  #pnlBox .lbl svg { width: 15px; height: 15px; color: var(--up); }
+  #pnlBox.running .lbl svg { animation: spin 1.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #pnl { font-size: clamp(26px, 4.2vw, 44px); font-weight: 700; letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums; margin-top: 2px; color: var(--up); }
+  #pnl.down { color: var(--down); }
+
+  /* controls */
+  #bar { position: fixed; bottom: calc(40px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%);
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; align-items: center; width: max-content;
+    max-width: calc(100% - 100px); padding: 8px; border-radius: 12px; background: rgba(11,11,15,.85);
+    border: 1px solid var(--line); transition: opacity .4s; }
+  #bar.idle { opacity: 0; }
+  .field { display: flex; align-items: center; gap: 4px; height: 34px; padding: 0 10px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .field input { width: 92px; background: transparent; border: 0; outline: 0; color: var(--text);
+    font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; }
+  button { height: 34px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line); font: inherit;
+    font-size: 13px; font-weight: 600; cursor: pointer; background: var(--panel); color: var(--text); }
+  #toggle.start { background: var(--up); border-color: var(--up); color: #04150d; }
+  #toggle.stop { background: var(--down); border-color: var(--down); color: #fff; }
+  #live { position: fixed; right: calc(90px + env(safe-area-inset-right, 0px)); bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+    height: 30px; padding: 0 12px; background: var(--panel); color: var(--text); font-size: 12px; }
+  canvas { touch-action: none; cursor: crosshair; }
+  #fs { width: 34px; padding: 0; display: grid; place-items: center; }
+  #fs svg { width: 16px; height: 16px; }
+
+  @media (max-width: 720px) {
+    #bar { max-width: calc(100% - 16px); bottom: calc(34px + env(safe-area-inset-bottom, 0px)); }
+    #pnlBox { top: calc(54px + env(safe-area-inset-top, 0px)); }
+    #legend { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="legend"></div>
+<button id="live" hidden>Go to live &rsaquo;</button>
+
+<div id="pnlBox">
+  <div class="lbl">PnL
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+  </div>
+  <div id="pnl">+$0 (+0%)</div>
+</div>
+
+<div id="bar">
+  <label class="field">Start MC $<input id="startMc" type="number" inputmode="decimal" step="any" value="10000"></label>
+  <label class="field">Target MC $<input id="targetMc" type="number" inputmode="decimal" step="any" value="5000000"></label>
+  <label class="field">PnL at target $<input id="amount" type="number" inputmode="decimal" step="any" value="25000"></label>
+  <button id="toggle" class="start">Start</button>
+  <button id="reset">Reset</button>
+  <button id="fs" title="Fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+</div>
+
+<script>
+(() => {
+  const TICK_MS = 40;              // price ticks: 25 per second
+  const CANDLE_MS = 1000;          // one candle per second
+  const KEEP = 20000;              // candles kept (about 5.5 hours of 1s candles)
+  const KEY = 'livepnl.v3';
+  const view = { spacing: 9, offset: 0, auto: true, yMin: null, yMax: null };   // chart zoom/scroll
+
+  const $ = id => document.getElementById(id);
+  const canvas = $('c'), ctx = canvas.getContext('2d');
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const BG = css('--bg'), UP = css('--up'), DOWN = css('--down'), ACCENT = css('--accent');
+
+  // ---------- state ----------
+  // the chart is market cap; PnL comes from a position bought at the start market cap
+  let s = { mc: 10000, startMc: 10000, targetMc: 5000000, goalPnl: 25000, liveTarget: 5000000,
+            running: false, ret: 0, swing: 0, vol: 1, t: Date.now() };
+  let candles = [];
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (saved && typeof saved.mc === 'number') { s = { ...s, ...saved }; candles = saved.candles || []; }
+  } catch (e) {}
+  $('amount').value = s.goalPnl; $('startMc').value = s.startMc; $('targetMc').value = s.targetMc;
+  if (!candles.length) newCandle(Date.now());
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify({ ...s, t: Date.now(), candles: candles.slice(-KEEP) })); } catch (e) {}
+  }
+
+  function newCandle(t) {
+    const p = s.mc;
+    candles.push({ t, o: p, h: p, l: p, c: p, v: 0 });
+    if (candles.length > KEEP * 1.1) candles.splice(0, candles.length - KEEP);
+    if (view.offset > 0.5) view.offset += 1;   // stay put while scrolled back in history
+  }
+
+  // ---------- price model ----------
+  const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+
+  function step() {
+    // early on (low market cap) it's much wilder; it calms down as it climbs
+    const prog = Math.min(Math.max(Math.log(s.mc / s.startMc) / Math.log(s.targetMc / s.startMc), 0), 1);
+    const early = Math.pow(1 - prog, 1.6);
+    const baseVol = 0.0019 * (1 + 2.6 * early);                          // per-tick log volatility
+    s.vol += (1 - s.vol) * 0.02 + Math.abs(gauss()) * 0.06 - 0.03;
+    if (Math.random() < 0.004) s.vol += 1.2 + Math.random() * 1.5;      // volatility burst
+    s.vol = Math.min(Math.max(s.vol, 0.35), 4);
+
+    const x = Math.log(s.mc), gap = Math.log(s.liveTarget) - x;
+    s.swing = s.swing * 0.985 + gauss() * (0.16 + 0.12 * early);         // rallies & pullbacks
+    if (Math.random() < 0.006 + 0.01 * early) s.swing = -s.swing * 1.4;                 // sharp reversal
+    const under = Math.log(s.startMc * 0.65 / s.mc);                  // don't dump too far below the start
+    const floor = under > 0 ? 0.004 + under * 0.08 : 0;
+    if (under > 0 && s.swing < 0) s.swing *= 0.8;
+    const drift = (Math.min(gap * 0.0004, 0.0016) + 0.0003) * (1 - 0.8 * early) + floor + s.swing * 0.0019 * 0.85;
+    s.ret = s.ret * 0.45 + gauss() * baseVol * s.vol;
+    s.mc = Math.exp(x + drift + s.ret);
+    if (s.mc < s.startMc * 0.55) { s.mc = s.startMc * 0.55 * (1 + Math.random() * 0.02); s.ret = Math.abs(s.ret); }  // bounce off the floor
+    if (gap < 0) s.liveTarget *= 1.00003;                                // keeps going after target
+
+    const c = candles[candles.length - 1];
+    c.c = s.mc; if (s.mc > c.h) c.h = s.mc; if (s.mc < c.l) c.l = s.mc;
+    c.v += (Math.abs(s.ret) / 0.0019) * (0.6 + Math.random()) * s.vol * 40 + Math.random() * 6;
+  }
+
+  // ---------- formatting ----------
+  const money = n => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function compact(n) {
+    const a = Math.abs(n), sign = n < 0 ? '-' : '';
+    if (a >= 1e9) return sign + '$' + (a / 1e9).toFixed(2) + 'B';
+    if (a >= 1e6) return sign + '$' + (a / 1e6).toFixed(2) + 'M';
+    if (a >= 1e4) return sign + '$' + (a / 1e3).toFixed(1) + 'K';
+    return sign + '$' + a.toLocaleString('en-US', { maximumFractionDigits: a < 100 ? 2 : 0 });
+  }
+  const pad = n => String(n).padStart(2, '0');
+  const hms = t => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
+
+  // size is picked so you make exactly "PnL at target" when MC reaches "Target MC"
+  const size = () => s.goalPnl / Math.max(s.targetMc / s.startMc - 1, 1e-9);
+  const pnlNow = () => size() * (s.mc / s.startMc - 1);
+  function renderText() {
+    const p = pnlNow(), pct = (s.mc / s.startMc - 1) * 100;
+    const el = $('pnl');
+    el.textContent = (p >= 0 ? '+' : '-') + money(p) + ' (' + (pct >= 0 ? '+' : '') + pct.toLocaleString('en-US', { maximumFractionDigits: pct >= 1000 ? 0 : 2 }) + '%)';
+    el.className = p >= 0 ? '' : 'down';
+
+    const c = hoverCandle() || candles[candles.length - 1], cls = c.c >= c.o ? 'up' : 'down';
+    const chg = c.c - c.o, chgPct = c.o ? (chg / Math.abs(c.o)) * 100 : 0;
+    $('legend').innerHTML =
+      `<span class="name">Market cap · 1s · live</span>` +
+      `<span class="k">O</span><span class="${cls}">${compact(c.o)}</span>` +
+      `<span class="k">H</span><span class="${cls}">${compact(c.h)}</span>` +
+      `<span class="k">L</span><span class="${cls}">${compact(c.l)}</span>` +
+      `<span class="k">C</span><span class="${cls}">${compact(c.c)}</span>` +
+      `<span class="${cls}" style="margin-left:6px">${chg >= 0 ? '+' : ''}${compact(chg)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)</span><br>` +
+      `<span class="name" style="color:var(--muted)">Volume</span><span class="${cls}">${c.v.toFixed(2)}</span>`;
+  }
+
+  // ---------- controls ----------
+  function setRunning(on) {
+    s.running = on;
+    const b = $('toggle'); b.textContent = on ? 'Stop' : 'Start'; b.className = on ? 'stop' : 'start';
+    $('pnlBox').classList.toggle('running', on);
+    lastTick = performance.now();
+    if (on) nextCandleAt = Date.now() + CANDLE_MS;
+    save();
+  }
+  function applyInputs() {
+    const g = parseFloat($('amount').value), a = parseFloat($('startMc').value), b = parseFloat($('targetMc').value);
+    if (Number.isFinite(g)) s.goalPnl = g;
+    if (Number.isFinite(a) && a > 0) s.startMc = a;
+    if (Number.isFinite(b) && b > 0 && b !== s.targetMc) { s.targetMc = b; s.liveTarget = b; }
+    renderText(); save();
+  }
+  $('toggle').onclick = () => { applyInputs(); setRunning(!s.running); };
+  $('amount').addEventListener('change', applyInputs);
+  $('startMc').addEventListener('change', applyInputs);
+  $('targetMc').addEventListener('change', applyInputs);
+  document.querySelectorAll('#bar input').forEach(i => i.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { applyInputs(); if (!s.running) setRunning(true); }
+  }));
+  $('reset').onclick = () => {
+    applyInputs(); s.mc = s.startMc; s.liveTarget = s.targetMc; s.ret = 0; s.swing = 0; s.vol = 1;
+    candles = []; newCandle(Date.now()); nextCandleAt = Date.now() + CANDLE_MS;
+    view.yMin = view.yMax = null; goLive(); renderText(); save();
+  };
+  $('fs').onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen?.().catch(() => {});
+  };
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space') { e.preventDefault(); $('toggle').click(); }
+    if (e.key === 'f') $('fs').click();
+  });
+  // hide the control bar when the mouse is idle while it's running
+  let idleTimer;
+  const wake = () => { $('bar').classList.remove('idle'); clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (s.running && !$('bar').matches(':focus-within')) $('bar').classList.add('idle'); }, 2500); };
+  ['mousemove', 'touchstart', 'keydown'].forEach(ev => window.addEventListener(ev, wake));
+
+  // ---------- chart ----------
+  let W = 0, H = 0;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  // ---------- chart view (zoom / pan like TradingView) ----------
+  const DEFAULT_SPACING = () => (W < 720 ? 7 : 9);
+  let volMax = null, hover = null, L = {};   // L = current layout
+  function niceStep(range, count) {
+    const raw = range / count, p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p;
+    return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * p;
+  }
+  const crisp = v => Math.round(v) + 0.5;
+  const FONT = '12px Inter, ui-sans-serif, system-ui, sans-serif';
+  const absOf = c => Math.round(c.t / CANDLE_MS);
+  const TIME_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+  const hm = t => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+
+  function layout() {
+    const AXIS_R = 78, AXIS_B = 28, TOP = 150;
+    const cw = W - AXIS_R, chartBottom = H - AXIS_B, volH = (chartBottom - TOP) * 0.2;
+    L = { AXIS_R, AXIS_B, TOP, cw, chartBottom, volH, priceBottom: chartBottom - volH - 10,
+          rightPad: DEFAULT_SPACING() * 4 };
+    L.lastAbs = absOf(candles[candles.length - 1]);
+    L.rightIdx = L.lastAbs - view.offset;
+    L.xOfAbs = a => L.cw - L.rightPad - (L.rightIdx - a) * view.spacing;
+    L.absOfX = x => L.rightIdx - (L.cw - L.rightPad - x) / view.spacing;
+  }
+  // first candle index with abs >= a
+  function lowerBound(a) {
+    let lo = 0, hi = candles.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (absOf(candles[m]) < a) lo = m + 1; else hi = m; }
+    return lo;
+  }
+
+  function buckets() {
+    // when zoomed far out, merge candles so each drawn candle is at least ~3px wide
+    const g = Math.max(1, Math.ceil(3 / view.spacing));
+    const a0 = Math.floor(L.absOfX(-10)), a1 = Math.ceil(L.absOfX(L.cw + 10));
+    const out = [];
+    for (let i = lowerBound(a0); i < candles.length; i++) {
+      const c = candles[i], a = absOf(c); if (a > a1) break;
+      const k = Math.floor(a / g), b = out[out.length - 1];
+      if (b && b.k === k) { b.h = Math.max(b.h, c.h); b.l = Math.min(b.l, c.l); b.c = c.c; b.v += c.v; b.last = c; }
+      else out.push({ k, a: k * g + (g - 1) / 2, t: c.t, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v, last: c });
+    }
+    return { out, g };
+  }
+
+  function draw() {
+    layout();
+    const { cw, chartBottom, volH, priceBottom, TOP, AXIS_B } = L;
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+    const { out: vis, g } = buckets();
+    const step = view.spacing * g, body = Math.max(1, Math.round(step * 0.68));
+
+    // y range: autoscale to what's on screen, or the range you dragged to
+    let lo = Infinity, hi = -Infinity, vmax = 1;
+    for (const c of vis) { if (c.l < lo) lo = c.l; if (c.h > hi) hi = c.h; if (c.v > vmax) vmax = c.v; }
+    if (!vis.length) { const c = candles[candles.length - 1]; lo = c.l; hi = c.h; }
+    if (view.auto) {
+      const span = Math.max(hi - lo, hi * 0.01);
+      const tMin = lo - span * 0.08, tMax = hi + span * 0.08;
+      if (view.yMin === null) { view.yMin = tMin; view.yMax = tMax; }
+      view.yMin += (tMin - view.yMin) * 0.15; view.yMax += (tMax - view.yMax) * 0.15;
+    }
+    volMax = volMax === null ? vmax : volMax + (vmax - volMax) * 0.15;
+    const y = v => TOP + (1 - (v - view.yMin) / (view.yMax - view.yMin)) * (priceBottom - TOP);
+    L.y = y; L.priceOfY = py => view.yMin + (1 - (py - TOP) / (priceBottom - TOP)) * (view.yMax - view.yMin);
+
+    // grid + price axis
+    ctx.font = FONT; ctx.textBaseline = 'middle'; ctx.lineWidth = 1;
+    const gs = niceStep(view.yMax - view.yMin, 9);
+    for (let v = Math.ceil(view.yMin / gs) * gs; v <= view.yMax; v += gs) {
+      const yy = crisp(y(v)); if (yy < TOP - 30 || yy > priceBottom + 5) continue;
+      ctx.strokeStyle = '#16171d'; ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(cw, yy); ctx.stroke();
+      ctx.fillStyle = '#9a9ea8'; ctx.fillText(compact(v), cw + 10, yy);
+    }
+
+    // time axis
+    const ts = TIME_STEPS.find(s => s * view.spacing >= 90) || 86400;
+    ctx.fillStyle = '#9a9ea8'; ctx.textAlign = 'center';
+    for (let a = Math.ceil(L.absOfX(0) / ts) * ts; a <= L.absOfX(cw); a += ts) {
+      const xx = crisp(L.xOfAbs(a)), t = a * CANDLE_MS;
+      ctx.strokeStyle = '#121318'; ctx.beginPath(); ctx.moveTo(xx, TOP - 20); ctx.lineTo(xx, chartBottom); ctx.stroke();
+      ctx.fillText(ts < 60 ? hms(t) : hm(t), xx, H - AXIS_B / 2);
+    }
+    ctx.textAlign = 'left';
+
+    // volume + candles
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, cw, chartBottom); ctx.clip();
+    for (const c of vis) {
+      const up = c.c >= c.o, col = up ? UP : DOWN, x = L.xOfAbs(c.a);
+      const vh = Math.max(1, (c.v / volMax) * volH);
+      ctx.fillStyle = up ? 'rgba(46,189,133,.45)' : 'rgba(246,70,93,.45)';
+      ctx.fillRect(Math.round(x - body / 2), Math.round(chartBottom - vh), body, Math.round(vh));
+      ctx.strokeStyle = col; ctx.fillStyle = col;
+      const xx = crisp(x);
+      ctx.beginPath(); ctx.moveTo(xx, Math.round(y(c.h))); ctx.lineTo(xx, Math.round(y(c.l))); ctx.stroke();
+      const top = Math.round(y(Math.max(c.o, c.c))), bot = Math.round(y(Math.min(c.o, c.c)));
+      ctx.fillRect(Math.round(x - body / 2), top, body, Math.max(1, bot - top));
+    }
+
+    // current price line
+    const last = candles[candles.length - 1], ly = crisp(y(last.c));
+    ctx.setLineDash([1, 3]); ctx.strokeStyle = ACCENT;
+    ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(cw, ly); ctx.stroke(); ctx.setLineDash([]);
+
+    // crosshair
+    if (hover) {
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = '#5b5f6b';
+      ctx.beginPath(); ctx.moveTo(crisp(hover.x), 0); ctx.lineTo(crisp(hover.x), chartBottom);
+      ctx.moveTo(0, crisp(hover.y)); ctx.lineTo(cw, crisp(hover.y)); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.restore();
+
+    if (ly > 0 && ly < chartBottom) tag(compact(last.c), ly, cw, ACCENT);
+    if (!hover || hover.y > priceBottom) tag(last.v.toFixed(2), crisp(chartBottom - Math.max(1, (last.v / volMax) * volH)), cw, ACCENT);
+    if (hover) {
+      if (hover.y <= priceBottom) tag(compact(L.priceOfY(hover.y)), crisp(hover.y), cw, '#363a45');
+      const a = Math.round(L.absOfX(hover.x)), label = hms(a * CANDLE_MS);
+      ctx.font = '600 ' + FONT; const w = ctx.measureText(label).width + 14;
+      ctx.fillStyle = '#363a45'; ctx.beginPath(); ctx.roundRect(hover.x - w / 2, chartBottom + 3, w, 20, 3); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(label, hover.x, chartBottom + 13); ctx.textAlign = 'left';
+      ctx.font = FONT;
+    }
+
+    // separators
+    ctx.strokeStyle = '#1b1c22';
+    ctx.beginPath(); ctx.moveTo(crisp(cw), 0); ctx.lineTo(crisp(cw), H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, crisp(chartBottom)); ctx.lineTo(W, crisp(chartBottom)); ctx.stroke();
+
+    $('live').hidden = view.offset < 3 && view.auto;
+  }
+  function tag(text, yy, cw, bg) {
+    ctx.font = '600 ' + FONT;
+    const w = Math.max(ctx.measureText(text).width + 12, 54);
+    ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(cw + 2, yy - 10, w, 20, 3); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(text, cw + 8, yy);
+    ctx.font = FONT;
+  }
+  // the candle under the crosshair (for the legend)
+  function hoverCandle() {
+    if (!hover || !L.absOfX) return null;
+    const i = lowerBound(Math.round(L.absOfX(hover.x)));
+    const c = candles[i];
+    return c && absOf(c) === Math.round(L.absOfX(hover.x)) ? c : null;
+  }
+
+  // ---------- zoom & pan ----------
+  const clampView = () => {
+    view.spacing = Math.min(Math.max(view.spacing, 0.12), 60);
+    const span = L.lastAbs - absOf(candles[0]);
+    view.offset = Math.min(Math.max(view.offset, -(L.cw * 0.6) / view.spacing), span + 5);
+  };
+  function zoomAt(x, factor) {
+    layout();
+    if (Math.abs(view.offset) < 0.5) { view.spacing *= factor; clampView(); view.offset = 0; return; }  // live: stay pinned to the newest candle
+    const anchor = Math.min(x, L.cw), a = L.absOfX(anchor);
+    view.spacing *= factor; clampView();
+    // keep the candle under the cursor in place
+    view.offset = L.lastAbs - (a + (L.cw - L.rightPad - anchor) / view.spacing);
+    clampView();
+  }
+  function scaleY(factor, cy) {
+    const p = cy == null ? (view.yMin + view.yMax) / 2 : L.priceOfY(cy);
+    view.auto = false;
+    view.yMin = p - (p - view.yMin) * factor; view.yMax = p + (view.yMax - p) * factor;
+  }
+  function goLive() { view.offset = 0; view.auto = true; }
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (e.ctrlKey || Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+      const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
+      if (e.clientX > L.cw) scaleY(1 / f); else zoomAt(e.clientX, f);
+    } else { view.offset -= e.deltaX / view.spacing; clampView(); }
+  }, { passive: false });
+
+  const ptrs = new Map(); let drag = null, pinch = null;
+  canvas.addEventListener('pointerdown', e => {
+    canvas.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()];
+      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y), mid: (p.x + q.x) / 2 }; drag = null; return;
+    }
+    const zone = e.clientX > L.cw ? 'price' : e.clientY > L.chartBottom ? 'time' : 'chart';
+    drag = { zone, x: e.clientX, y: e.clientY, moved: 0 };
+    if (e.pointerType !== 'mouse') hover = null;
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && ptrs.size === 2) {
+      const [p, q] = [...ptrs.values()], d = Math.hypot(p.x - q.x, p.y - q.y);
+      zoomAt(pinch.mid, d / pinch.d); pinch.d = d; return;
+    }
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      drag.x = e.clientX; drag.y = e.clientY; drag.moved += Math.abs(dx) + Math.abs(dy);
+      if (drag.zone === 'price') scaleY(Math.exp(dy * 0.006));
+      else if (drag.zone === 'time') zoomAt(L.cw, Math.exp(dx * 0.006));
+      else {
+        view.offset += dx / view.spacing; clampView();
+        if (Math.abs(dy) > 0 && (!view.auto || drag.moved > 12)) {
+          view.auto = false;
+          const per = (view.yMax - view.yMin) / (L.priceBottom - L.TOP);
+          view.yMin += dy * per; view.yMax += dy * per;
+        }
+      }
+    }
+    if (e.pointerType === 'mouse') {
+      hover = e.clientX < L.cw && e.clientY < L.chartBottom ? { x: e.clientX, y: e.clientY } : null;
+      canvas.style.cursor = drag && drag.zone === 'chart' ? 'grabbing' : e.clientX > L.cw ? 'ns-resize'
+        : e.clientY > L.chartBottom ? 'ew-resize' : 'crosshair';
+    }
+  });
+  const endPtr = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (!ptrs.size) drag = null; };
+  canvas.addEventListener('pointerup', endPtr);
+  canvas.addEventListener('pointercancel', endPtr);
+  canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hover = null; });
+  canvas.addEventListener('dblclick', e => {
+    if (e.clientX > L.cw) view.auto = true;   // double-click price axis = auto-scale
+    else { goLive(); view.spacing = DEFAULT_SPACING(); }
+  });
+  $('live').onclick = goLive;
+
+  // ---------- loop ----------
+  let lastTick = performance.now(), nextCandleAt = Date.now() + CANDLE_MS, lastSave = 0;
+  function frame(now) {
+    if (s.running) {
+      let k = 0;
+      while (now - lastTick >= TICK_MS && k < 500) { step(); lastTick += TICK_MS; k++; }
+      if (k === 500) lastTick = now;
+      const wall = Date.now();
+      while (wall >= nextCandleAt) { newCandle(nextCandleAt); nextCandleAt += CANDLE_MS; }
+      if (now - lastSave > 5000) { save(); lastSave = now; }
+    }
+    draw();
+    renderText();
+    requestAnimationFrame(frame);
+  }
+
+  // was running when the page closed? fast-forward the time it was away so it keeps going 24/7
+  if (s.running) {
+    const away = Math.max(0, Date.now() - (s.t || Date.now()));
+    const tpc = CANDLE_MS / TICK_MS;
+    const nCandles = Math.min(Math.floor(away / CANDLE_MS), 100000);
+    const start = Date.now() - nCandles * CANDLE_MS;
+    for (let i = 0; i < nCandles; i++) {
+      newCandle(start + i * CANDLE_MS);
+      for (let j = 0; j < tpc; j++) step();
+    }
+  }
+
+  resize();
+  view.spacing = DEFAULT_SPACING();
+  renderText();
+  setRunning(true);   // always runs 24/7; Stop only pauses until the page is opened again
+  wake();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
