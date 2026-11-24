@@ -39,12 +39,14 @@
   #pnl.down { color: var(--down); }
 
   /* controls */
-  #bar { position: fixed; top: 10px; right: 96px; display: flex; gap: 8px; align-items: center;
-    transition: opacity .4s; }
+  #bar { position: fixed; bottom: calc(40px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%);
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; align-items: center; width: max-content;
+    max-width: calc(100% - 100px); padding: 8px; border-radius: 12px; background: rgba(11,11,15,.85);
+    border: 1px solid var(--line); transition: opacity .4s; }
   #bar.idle { opacity: 0; }
   .field { display: flex; align-items: center; gap: 4px; height: 34px; padding: 0 10px; border-radius: 8px;
     background: var(--panel); border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
-  .field input { width: 84px; background: transparent; border: 0; outline: 0; color: var(--text);
+  .field input { width: 92px; background: transparent; border: 0; outline: 0; color: var(--text);
     font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; }
   button { height: 34px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line); font: inherit;
     font-size: 13px; font-weight: 600; cursor: pointer; background: var(--panel); color: var(--text); }
@@ -54,8 +56,8 @@
   #fs svg { width: 16px; height: 16px; }
 
   @media (max-width: 720px) {
-    #bar { top: auto; bottom: 34px; right: 8px; left: 8px; flex-wrap: wrap; justify-content: center; }
-    #pnlBox { top: 54px; }
+    #bar { max-width: calc(100% - 16px); bottom: calc(34px + env(safe-area-inset-bottom, 0px)); }
+    #pnlBox { top: calc(54px + env(safe-area-inset-top, 0px)); }
     #legend { font-size: 11px; }
   }
 </style>
@@ -74,8 +76,9 @@
 </div>
 
 <div id="bar">
-  <label class="field">Target $<input id="amount" type="number" inputmode="decimal" step="any" value="2500"></label>
-  <label class="field">Size $<input id="size" type="number" inputmode="decimal" step="any" value="1000"></label>
+  <label class="field">Start MC $<input id="startMc" type="number" inputmode="decimal" step="any" value="10000"></label>
+  <label class="field">Target MC $<input id="targetMc" type="number" inputmode="decimal" step="any" value="5000000"></label>
+  <label class="field">PnL at target $<input id="amount" type="number" inputmode="decimal" step="any" value="25000"></label>
   <button id="toggle" class="start">Start</button>
   <button id="reset">Reset</button>
   <button id="fs" title="Fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -86,7 +89,7 @@
   const TICK_MS = 40;              // price ticks: 25 per second
   const CANDLE_MS = 1000;          // one candle per second
   const KEEP = 600;                // candles kept in memory
-  const KEY = 'livepnl.v2';
+  const KEY = 'livepnl.v3';
 
   const $ = id => document.getElementById(id);
   const canvas = $('c'), ctx = canvas.getContext('2d');
@@ -94,13 +97,15 @@
   const BG = css('--bg'), UP = css('--up'), DOWN = css('--down'), ACCENT = css('--accent');
 
   // ---------- state ----------
-  let s = { pnl: 0, target: 2500, size: 1000, running: false, ret: 0, swing: 0, vol: 1, t: Date.now() };
+  // the chart is market cap; PnL comes from a position bought at the start market cap
+  let s = { mc: 10000, startMc: 10000, targetMc: 5000000, goalPnl: 25000, liveTarget: 5000000,
+            running: false, ret: 0, swing: 0, vol: 1, t: Date.now() };
   let candles = [];
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
-    if (saved && typeof saved.pnl === 'number') { s = { ...s, ...saved }; candles = saved.candles || []; }
+    if (saved && typeof saved.mc === 'number') { s = { ...s, ...saved }; candles = saved.candles || []; }
   } catch (e) {}
-  $('amount').value = s.target; $('size').value = s.size;
+  $('amount').value = s.goalPnl; $('startMc').value = s.startMc; $('targetMc').value = s.targetMc;
   if (!candles.length) newCandle(Date.now());
 
   function save() {
@@ -108,7 +113,7 @@
   }
 
   function newCandle(t) {
-    const p = s.pnl;
+    const p = s.mc;
     candles.push({ t, o: p, h: p, l: p, c: p, v: 0 });
     if (candles.length > KEEP) candles.splice(0, candles.length - KEEP);
   }
@@ -118,23 +123,21 @@
     return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
 
   function step() {
-    const scale = Math.max(Math.abs(s.target), 50);
-    const baseVol = scale * 0.0013;
+    const baseVol = 0.0019;                                              // per-tick log volatility
     s.vol += (1 - s.vol) * 0.02 + Math.abs(gauss()) * 0.06 - 0.03;
     if (Math.random() < 0.004) s.vol += 1.2 + Math.random() * 1.5;      // volatility burst
     s.vol = Math.min(Math.max(s.vol, 0.35), 4);
 
-    const gap = s.target - s.pnl;
-    const dir = Math.sign(s.target) || 1;
+    const x = Math.log(s.mc), gap = Math.log(s.liveTarget) - x;
     s.swing = s.swing * 0.985 + gauss() * 0.16;                          // rallies & pullbacks
     if (Math.random() < 0.006) s.swing = -s.swing * 1.4;                 // sharp reversal
-    const drift = gap * 0.0016 + dir * scale * 0.00006 + s.swing * baseVol * 0.9;
+    const drift = Math.min(gap * 0.0004, 0.0016) + 0.0003 + s.swing * baseVol * 0.8;
     s.ret = s.ret * 0.45 + gauss() * baseVol * s.vol;
-    s.pnl += drift + s.ret;
-    if (dir * gap < 0) s.target += dir * scale * 0.00006;               // keeps going after target
+    s.mc = Math.exp(x + drift + s.ret);
+    if (gap < 0) s.liveTarget *= 1.00003;                                // keeps going after target
 
     const c = candles[candles.length - 1];
-    c.c = s.pnl; if (s.pnl > c.h) c.h = s.pnl; if (s.pnl < c.l) c.l = s.pnl;
+    c.c = s.mc; if (s.mc > c.h) c.h = s.mc; if (s.mc < c.l) c.l = s.mc;
     c.v += (Math.abs(s.ret) / baseVol) * (0.6 + Math.random()) * s.vol * 40 + Math.random() * 6;
   }
 
@@ -150,16 +153,19 @@
   const pad = n => String(n).padStart(2, '0');
   const hms = t => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
 
+  // size is picked so you make exactly "PnL at target" when MC reaches "Target MC"
+  const size = () => s.goalPnl / Math.max(s.targetMc / s.startMc - 1, 1e-9);
+  const pnlNow = () => size() * (s.mc / s.startMc - 1);
   function renderText() {
-    const p = s.pnl, pct = s.size > 0 ? (p / s.size) * 100 : 0;
+    const p = pnlNow(), pct = (s.mc / s.startMc - 1) * 100;
     const el = $('pnl');
-    el.textContent = (p >= 0 ? '+' : '-') + money(p) + ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%)';
+    el.textContent = (p >= 0 ? '+' : '-') + money(p) + ' (' + (pct >= 0 ? '+' : '') + pct.toLocaleString('en-US', { maximumFractionDigits: pct >= 1000 ? 0 : 2 }) + '%)';
     el.className = p >= 0 ? '' : 'down';
 
     const c = candles[candles.length - 1], cls = c.c >= c.o ? 'up' : 'down';
     const chg = c.c - c.o, chgPct = c.o ? (chg / Math.abs(c.o)) * 100 : 0;
     $('legend').innerHTML =
-      `<span class="name">PnL · 1s · live</span>` +
+      `<span class="name">Market cap · 1s · live</span>` +
       `<span class="k">O</span><span class="${cls}">${compact(c.o)}</span>` +
       `<span class="k">H</span><span class="${cls}">${compact(c.h)}</span>` +
       `<span class="k">L</span><span class="${cls}">${compact(c.l)}</span>` +
@@ -178,19 +184,21 @@
     save();
   }
   function applyInputs() {
-    const t = parseFloat($('amount').value), z = parseFloat($('size').value);
-    if (Number.isFinite(t)) s.target = t;
-    if (Number.isFinite(z) && z > 0) s.size = z;
+    const g = parseFloat($('amount').value), a = parseFloat($('startMc').value), b = parseFloat($('targetMc').value);
+    if (Number.isFinite(g)) s.goalPnl = g;
+    if (Number.isFinite(a) && a > 0) s.startMc = a;
+    if (Number.isFinite(b) && b > 0 && b !== s.targetMc) { s.targetMc = b; s.liveTarget = b; }
     renderText(); save();
   }
   $('toggle').onclick = () => { applyInputs(); setRunning(!s.running); };
   $('amount').addEventListener('change', applyInputs);
-  $('size').addEventListener('change', applyInputs);
+  $('startMc').addEventListener('change', applyInputs);
+  $('targetMc').addEventListener('change', applyInputs);
   document.querySelectorAll('#bar input').forEach(i => i.addEventListener('keydown', e => {
     if (e.key === 'Enter') { applyInputs(); if (!s.running) setRunning(true); }
   }));
   $('reset').onclick = () => {
-    applyInputs(); s.pnl = 0; s.ret = 0; s.swing = 0; s.vol = 1;
+    applyInputs(); s.mc = s.startMc; s.liveTarget = s.targetMc; s.ret = 0; s.swing = 0; s.vol = 1;
     candles = []; newCandle(Date.now()); nextCandleAt = Date.now() + CANDLE_MS;
     viewMin = viewMax = null; renderText(); save();
   };
@@ -243,7 +251,7 @@
     // smooth autoscale
     let lo = Infinity, hi = -Infinity, vmax = 1;
     for (const c of vis) { if (c.l < lo) lo = c.l; if (c.h > hi) hi = c.h; if (c.v > vmax) vmax = c.v; }
-    const span = Math.max(hi - lo, Math.max(Math.abs(s.target), 50) * 0.02);
+    const span = Math.max(hi - lo, hi * 0.01);
     const tMin = lo - span * 0.08, tMax = hi + span * 0.08;
     if (viewMin === null) { viewMin = tMin; viewMax = tMax; volMax = vmax; }
     viewMin += (tMin - viewMin) * 0.1; viewMax += (tMax - viewMax) * 0.1; volMax += (vmax - volMax) * 0.1;
